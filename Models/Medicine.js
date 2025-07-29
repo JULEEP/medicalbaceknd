@@ -5,18 +5,17 @@ const medicineSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Pharmacy',
   },
-  pharmacyCategoryId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'PharmacyCategory',
-  },
   name: {
     type: String,
   },
-  image: {
-    type: String,
+  images: {
+    type: [String], // Array of image URLs
   },
   price: {
     type: Number,
+  },
+  description: {
+    type: String,
   }
 }, { timestamps: true });
 

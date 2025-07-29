@@ -4,7 +4,6 @@ const categorySchema = new mongoose.Schema(
   {
     categoryName: {
       type: String,
-      required: true,
     },
     image: {
       type: String, // This will store the Cloudinary image URL
@@ -13,6 +12,7 @@ const categorySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Service',
     },
+      serviceName: { type: String, },
   },
   { timestamps: true }
 );

@@ -12,47 +12,80 @@ cloudinary.config({
   api_secret: process.env.CLOUD_API_SECRET,
 });
 
-// ➕ Create Pharmacy
 export const createPharmacy = async (req, res) => {
   try {
-    const { name, location, image } = req.body;
+    const {
+      name,
+      image,
+      latitude,
+      longitude,
+      categories,
+      products
+    } = req.body;
 
-    if (!name || !location) {
-      return res.status(400).json({ message: 'Name and location are required' });
+    // ✅ Validate required fields
+    if (!name || !latitude || !longitude) {
+      return res.status(400).json({ message: 'Name, latitude, and longitude are required' });
     }
 
     let imageUrl = '';
 
-    if (req.files && req.files.image) {
+    // 📷 Upload pharmacy image to Cloudinary or use direct URL
+    if (req.files?.image) {
       const uploaded = await cloudinary.uploader.upload(req.files.image.tempFilePath, {
         folder: 'pharmacies',
       });
       imageUrl = uploaded.secure_url;
-    } else if (image && image.startsWith('http')) {
+    } else if (image?.startsWith('http')) {
       imageUrl = image;
     } else {
-      return res.status(400).json({ message: 'Image file or valid URL is required' });
+      return res.status(400).json({ message: 'Pharmacy image file or valid URL is required' });
     }
 
+    // ✅ Parse categories
+    let parsedCategories = [];
+    if (typeof categories === 'string') {
+      parsedCategories = JSON.parse(categories);
+    } else if (Array.isArray(categories)) {
+      parsedCategories = categories;
+    }
+
+    // 🛡️ Validate each category has name and image
+    if (parsedCategories.length > 0 && !parsedCategories.every(cat => cat.name && cat.image)) {
+      return res.status(400).json({ message: 'Each category must include both name and image' });
+    }
+
+    // ✅ Parse products
+    let parsedProducts = [];
+    if (typeof products === 'string') {
+      parsedProducts = JSON.parse(products);
+    } else if (Array.isArray(products)) {
+      parsedProducts = products;
+    }
+
+    // 🏥 Create new pharmacy
     const newPharmacy = new Pharmacy({
       name,
       image: imageUrl,
-      location,
+      latitude: parseFloat(latitude),
+      longitude: parseFloat(longitude),
+      categories: parsedCategories,
+      products: parsedProducts,
     });
 
+    // 📍 location (GeoJSON) will be auto-handled in schema pre-save hook
     await newPharmacy.save();
 
-    res.status(201).json({
+    return res.status(201).json({
       message: 'Pharmacy created successfully',
       pharmacy: newPharmacy,
     });
 
   } catch (error) {
     console.error('Error creating pharmacy:', error);
-    res.status(500).json({ message: 'Server error' });
+    return res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
-
 // 📦 Get All Pharmacies
 export const getAllPharmacies = async (req, res) => {
   try {
@@ -138,49 +171,58 @@ export const getAllPharmacyCategories = async (req, res) => {
 // ➕ Create Medicine
 export const createMedicine = async (req, res) => {
   try {
-    const { pharmacyId, pharmacyCategoryId, name, price, image } = req.body;
+    const { pharmacyId, name, price, description } = req.body;
 
-    if (!pharmacyId || !pharmacyCategoryId || !name || !price) {
-      return res.status(400).json({ message: 'All fields are required' });
+
+    // Check pharmacy exists
+    const pharmacy = await Pharmacy.findById(pharmacyId);
+    if (!pharmacy) {
+      return res.status(404).json({ message: 'Pharmacy not found' });
     }
 
-    // Verify pharmacy and category exist
-    const pharmacy = await Pharmacy.findById(pharmacyId);
-    if (!pharmacy) return res.status(404).json({ message: 'Pharmacy not found' });
+    let images = [];
 
-    const category = await PharmacyCategory.findById(pharmacyCategoryId);
-    if (!category) return res.status(404).json({ message: 'Pharmacy Category not found' });
+    // Case 1: Upload multiple files
+    if (req.files && req.files.images) {
+      const files = Array.isArray(req.files.images) ? req.files.images : [req.files.images];
 
-    let imageUrl = '';
-
-    if (req.files && req.files.image) {
-      const uploaded = await cloudinary.uploader.upload(req.files.image.tempFilePath, {
-        folder: 'medicines',
-      });
-      imageUrl = uploaded.secure_url;
-    } else if (image && image.startsWith('http')) {
-      imageUrl = image;
-    } else {
-      return res.status(400).json({ message: 'Image file or valid URL is required' });
+      for (let file of files) {
+        const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: 'medicines',
+        });
+        images.push(uploaded.secure_url);
+      }
+    } 
+    // Case 2: URLs passed directly in req.body.images[]
+    else if (Array.isArray(req.body.images)) {
+      images = req.body.images.filter(img => img.startsWith('http'));
+    } 
+    else {
+      return res.status(400).json({ message: 'Images are required (upload or URL)' });
     }
 
     const newMedicine = new Medicine({
       pharmacyId,
-      pharmacyCategoryId,
       name,
-      image: imageUrl,
-      price
+      images,
+      price,
+      description
     });
 
     await newMedicine.save();
 
     const populated = await Medicine.findById(newMedicine._id)
-      .populate('pharmacyId', 'name location')
-      .populate('pharmacyCategoryId', 'categoryName');
+      .populate('pharmacyId', 'name location');
 
     res.status(201).json({
       message: 'Medicine created successfully',
-      medicine: populated
+      medicine: {
+        name: populated.name,
+        images: populated.images,
+        price: populated.price,
+        description: populated.description,
+        pharmacy: populated.pharmacyId,
+      }
     });
 
   } catch (error) {
@@ -189,17 +231,27 @@ export const createMedicine = async (req, res) => {
   }
 };
 
+
 // 📥 Get All Medicines
 export const getAllMedicines = async (req, res) => {
   try {
     const medicines = await Medicine.find()
-      .populate('pharmacyId', 'name location')
-      .populate('pharmacyCategoryId', 'categoryName');
+      .populate('pharmacyId', 'name location');
+
+    // Format each medicine as per createMedicine response
+    const formatted = medicines.map(med => ({
+      medicineId: med._id,
+      name: med.name,
+      images: med.images,
+      price: med.price,
+      description: med.description,
+      pharmacy: med.pharmacyId, // contains name & location
+    }));
 
     res.status(200).json({
       message: 'Medicines fetched successfully',
-      total: medicines.length,
-      medicines
+      total: formatted.length,
+      medicines: formatted
     });
   } catch (error) {
     console.error('Error fetching medicines:', error);
@@ -209,14 +261,14 @@ export const getAllMedicines = async (req, res) => {
 
 
 
+
 // 📥 Get Single Medicine by ID
 export const getSingleMedicine = async (req, res) => {
   try {
     const { medicineId } = req.params;
 
     const medicine = await Medicine.findById(medicineId)
-      .populate('pharmacyId', 'name location')
-      .populate('pharmacyCategoryId', 'categoryName');
+      .populate('pharmacyId', 'name location');
 
     if (!medicine) {
       return res.status(404).json({ message: 'Medicine not found' });
@@ -224,10 +276,18 @@ export const getSingleMedicine = async (req, res) => {
 
     res.status(200).json({
       message: 'Medicine fetched successfully',
-      medicine
+      medicine: {
+        medicineId: medicine._id,
+        name: medicine.name,
+        images: medicine.images,
+        price: medicine.price,
+        description: medicine.description,
+        pharmacy: medicine.pharmacyId, // populated: { name, location }
+      }
     });
   } catch (error) {
     console.error('Error fetching medicine:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
+

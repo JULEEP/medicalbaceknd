@@ -5,6 +5,7 @@ import multer from 'multer'; // Import multer for file handling
 import path from 'path';  // To resolve file paths
 import cloudinary from '../config/cloudinary.js';
 import { fileURLToPath } from 'url';
+import Pharmacy from '../Models/Pharmacy.js';
 
 
 
@@ -272,29 +273,28 @@ export const getProfile = async (req, res) => {
   try {
     const userId = req.params.id;  // Get the user ID from request params
 
-    // Find user by ID and populate the subscribedPlans
-    const user = await User.findById(userId).populate('subscribedPlans.planId');  // Assuming `subscribedPlans` references `Plan` model
+    // Find user by ID
+    const user = await User.findById(userId);  // No need to populate subscribedPlans
 
     if (!user) {
-      return res.status(404).json({ message: 'User not found!' });
+      return res.status(404).json({ message: 'User not found! Please check the provided user ID.' });
     }
 
-    // Respond with user details along with subscribed plans and include dob and marriageAnniversaryDate
+    // Respond with selected user details and set default profileImage to null if not present
     return res.status(200).json({
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      mobile: user.mobile,
-      profileImage: user.profileImage,
-      dob: user.dob || null,  // Return dob or null if not present
-      marriageAnniversaryDate: user.marriageAnniversaryDate || null,  // Return marriageAnniversaryDate or null if not present
-      subscribedPlans: user.subscribedPlans,  // Include subscribedPlans in the response
+      message: 'User profile retrieved successfully!',  // Custom success message
+      data: {
+        name: user.name || 'No name available',  // Provide fallback in case name is missing
+        mobile: user.mobile || 'No mobile number available',  // Provide fallback in case mobile is missing
+        profileImage: user.profileImage || null,  // Default to null if profileImage doesn't exist
+      }
     });
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error' });
+    console.error('Error:', error);
+    return res.status(500).json({ message: 'Server error. Please try again later.' });
   }
 };
+
 
 
 
@@ -444,5 +444,74 @@ export const getSubmittedFormsByUser = async (req, res) => {
   } catch (error) {
     console.error('Error fetching submitted forms:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+
+export const updateUserLocation = async (req, res) => {
+  try {
+    const { userId, latitude, longitude } = req.body;
+
+    if (!userId || latitude === undefined || longitude === undefined) {
+      return res.status(400).json({ message: 'userId, latitude, and longitude are required' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        location: {
+          type: 'Point',
+          coordinates: [parseFloat(longitude), parseFloat(latitude)],
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    return res.status(200).json({
+      message: 'User location stored successfully',
+      location: updatedUser.location,
+    });
+  } catch (error) {
+    console.error('Error storing user location:', error);
+    return res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+};
+
+
+export const getNearestPharmaciesByUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId);
+    if (!user || !user.location || !user.location.coordinates) {
+      return res.status(404).json({ message: 'User location not found' });
+    }
+
+    const [userLng, userLat] = user.location.coordinates;
+
+    const pharmacies = await Pharmacy.aggregate([
+      {
+        $geoNear: {
+          near: { type: "Point", coordinates: [userLng, userLat] },
+          distanceField: "dist.calculated",
+          maxDistance: 10000,
+          spherical: true,
+        }
+      },
+    ]);
+
+    res.status(200).json({
+      message: 'Nearest pharmacies fetched successfully',
+      pharmacies,
+    });
+
+  } catch (error) {
+    console.error('Error fetching nearest pharmacies:', error);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };

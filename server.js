@@ -12,6 +12,7 @@ import CategoryRoutes from './Routes/categoryRoutes.js'
 import { fileURLToPath } from 'url';  // Import the fileURLToPath method
 import cloudinary from './config/cloudinary.js';
 import fileUpload from 'express-fileupload';
+import pharmacyRoutes from './Routes/pharmacyRoutes.js'
 
 dotenv.config();
 
@@ -60,6 +61,9 @@ app.get("/", (req, res) => {
 // Middleware to parse JSON bodies
 app.use(bodyParser.json());
 
+const port = process.env.PORT || 4062;
+
+
 // Serve frontend static files (HTML, JS, CSS)
 
 
@@ -69,12 +73,13 @@ const server = http.createServer(app);
 app.use('/api/users', UserRoutes);
 app.use('/api/service', ServiceRoutes);
 app.use('/api/category', CategoryRoutes);
+app.use('/api/pharmacy', pharmacyRoutes);
+
 
 
 
 
 // Start the server
-const port = process.env.PORT || 6000;
-server.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
+app.listen(port, '0.0.0.0', () => {
+  console.log(`🚀 Server running on http://0.0.0.0:${port}`);
 });

@@ -14,19 +14,12 @@ cloudinary.config({
   api_secret: process.env.CLOUD_API_SECRET,
 });
 
-// Create Category (categoryName + image + serviceId + return serviceName)
 export const createCategory = async (req, res) => {
   try {
-    const { categoryName, image, serviceId } = req.body;
+    const { categoryName, image, serviceName } = req.body;
 
-    if (!categoryName || !serviceId) {
-      return res.status(400).json({ message: 'categoryName and serviceId are required' });
-    }
-
-    // Check if service exists
-    const serviceExists = await Service.findById(serviceId);
-    if (!serviceExists) {
-      return res.status(404).json({ message: 'Service not found' });
+    if (!categoryName || !serviceName) {
+      return res.status(400).json({ message: 'categoryName and serviceName are required' });
     }
 
     let imageUrl = '';
@@ -42,21 +35,23 @@ export const createCategory = async (req, res) => {
       return res.status(400).json({ message: 'Image file or valid URL is required' });
     }
 
-    // Create the category
+    // Save only categoryName, image, and serviceName
     const newCategory = new Category({
       categoryName,
       image: imageUrl,
-      serviceId,
+      serviceName,
     });
 
     await newCategory.save();
 
-    // Populate serviceName from serviceId
-    const populatedCategory = await Category.findById(newCategory._id).populate('serviceId', 'servicesName');
-
+    // Return clean response
     return res.status(201).json({
       message: 'Category created successfully',
-      category: populatedCategory,
+      category: {
+        categoryName,
+        image: imageUrl,
+        serviceName,
+      },
     });
 
   } catch (error) {
@@ -66,10 +61,18 @@ export const createCategory = async (req, res) => {
 };
 
 
-// Get All Categories (with service data populated)
 export const getAllCategories = async (req, res) => {
   try {
-    const categories = await Category.find().populate('serviceId', 'servicesName image');
+    const { serviceName } = req.query;
+
+    let query = {};
+    if (serviceName) {
+      // case-insensitive partial match using regex
+      query.serviceName = { $regex: serviceName, $options: 'i' };
+    }
+
+    const categories = await Category.find(query);
+
     return res.status(200).json({
       message: 'Categories fetched successfully',
       total: categories.length,

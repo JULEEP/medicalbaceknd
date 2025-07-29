@@ -8,8 +8,8 @@ import {
      getProfile,
      verifyMobile,
      resetPassword,
-     submitForm,
-     getSubmittedFormsByUser,
+     updateUserLocation,
+     getNearestPharmaciesByUser,
     } from '../Controller/UserController.js'; // Import UserController
 const router = express.Router();
 
@@ -32,8 +32,9 @@ router.put('/edit-profile/:id', editProfileImage);  // Profile editing by userId
 router.get('/get-profile/:id', getProfile);  // Get profile by userId
 router.post('/verify', verifyMobile);  // Get profile by userId
 router.post('/reset-password', resetPassword);  // Get profile by userId
-router.post('/submitform/:userId', submitForm);  // Get profile by userId
-router.get('/getsubmittedform/:userId', getSubmittedFormsByUser);  // Get profile by userId
+router.post('/add-location', updateUserLocation);  // Get profile by userId
+router.get('/nearbypharmacy/:userId', getNearestPharmaciesByUser);
+
 
 
 
