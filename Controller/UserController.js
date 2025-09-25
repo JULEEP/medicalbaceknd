@@ -6,6 +6,23 @@ import path from 'path';  // To resolve file paths
 import cloudinary from '../config/cloudinary.js';
 import { fileURLToPath } from 'url';
 import Pharmacy from '../Models/Pharmacy.js';
+import Medicine from '../Models/Medicine.js';
+import Cart from '../Models/Cart.js';
+import mongoose from 'mongoose';
+import Order from '../Models/Order.js';
+import Query from '../Models/Query.js';
+import Prescription from '../Models/Prescription.js';
+import Rider from '../Models/Rider.js';
+import { Notification } from '../Models/Notification.js';
+import Razorpay from "razorpay";
+import Chat from '../Models/Chat.js';
+
+
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_BxtRNvflG06PTV",
+  key_secret: process.env.RAZORPAY_KEY_SECRET || "RecEtdcenmR7Lm4AIEwo4KFr",
+});
 
 
 
@@ -38,27 +55,85 @@ export const registerUser = async (req, res) => {
     }
 
     // Generate a random 8-digit code if not provided
-    const generatedCode = code || Math.floor(10000000 + Math.random() * 90000000).toString();
+    const generatedCode =
+      code || Math.floor(10000000 + Math.random() * 90000000).toString();
 
-    // Create new user
-    const newUser = new User({ name, mobile, code: generatedCode });
+    // Create new user with default status "active"
+    const newUser = new User({
+      name,
+      mobile,
+      code: generatedCode,
+      status: "active", // ✅ default status
+    });
 
     await newUser.save();
 
     return res.status(201).json({
-      message: 'User registered successfully',
+      message: "User registered successfully",
       user: {
         id: newUser._id,
         name: newUser.name,
         mobile: newUser.mobile,
         code: newUser.code,
-        createdAt: newUser.createdAt
+        status: newUser.status, // ✅ include status in response
+        createdAt: newUser.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("Error in registerUser:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+
+export const updateUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { name, mobile } = req.body;
+
+    // Validate User ID
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    // Validate required fields
+    if (!name && !mobile) {
+      return res.status(400).json({ message: "At least one field (name or mobile) is required" });
+    }
+
+    // Check if mobile is already used by another user
+    if (mobile) {
+      const existingUser = await User.findOne({ mobile, _id: { $ne: userId } });
+      if (existingUser) {
+        return res.status(400).json({ message: "Mobile number is already in use by another account" });
+      }
+    }
+
+    // Update user
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: { ...(name && { name }), ...(mobile && { mobile }) } },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      message: "User updated successfully",
+      user: {
+        id: updatedUser._id,
+        name: updatedUser.name,
+        mobile: updatedUser.mobile,
+        profileImage: updatedUser.profileImage
       }
     });
 
   } catch (error) {
-    console.error('Error in registerUser:', error);
-    return res.status(500).json({ message: 'Server error' });
+    console.error("Error updating user:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -101,6 +176,7 @@ export const loginUser = async (req, res) => {
         name: user.name,
         mobile: user.mobile,
         code: user.code || null,
+        status: user.status,
         createdAt: user.createdAt
       }
     });
@@ -114,32 +190,43 @@ export const loginUser = async (req, res) => {
 
 
 // User Controller (GET User)
+// Get single user by ID
 export const getUser = async (req, res) => {
   try {
-    const userId = req.params.userId;  // Get the user ID from request params
+    const { userId } = req.params;
 
-    // Find user by ID
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    // Find user
     const user = await User.findById(userId);
 
     if (!user) {
-      return res.status(404).json({ message: 'User not found!' });
+      return res.status(404).json({ message: "User not found!" });
     }
 
     return res.status(200).json({
-      message: 'User details retrieved successfully!',
-      id: user._id,               // Include the user ID in the response
-      name: user.name,            // Include the name
-      email: user.email,          // Include the email
-      mobile: user.mobile,        // Include the mobile number
-      aadhaarCardNumber: user.aadhaarCardNumber,  // Include the Aadhaar card number
-      profileImage: user.profileImage || 'https://img.freepik.com/premium-vector/student-avatar-illustration-user-profile-icon-youth-avatar_118339-4406.jpg?w=2000', // Include profile image (or default if none)
+      message: "User details retrieved successfully",
+      user: {
+        id: user._id,
+        name: user.name,
+        mobile: user.mobile,
+        code: user.code,
+        profileImage:
+          user.profileImage ||
+          "https://img.freepik.com/premium-vector/student-avatar-illustration-user-profile-icon-youth-avatar_118339-4406.jpg?w=2000",
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      }
     });
+
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: 'Server error' });
+    console.error("Error in getUser:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
-
 
 
 
@@ -223,7 +310,7 @@ export const createProfile = async (req, res) => {
 // Update Profile Image (with userId in params)
 export const editProfileImage = async (req, res) => {
   try {
-    const userId = req.params.id; // Get the userId from request params
+    const userId = req.params.userId; // Get the userId from request params
 
     // Check if the user exists
     const existingUser = await User.findById(userId);
@@ -513,5 +600,1501 @@ export const getNearestPharmaciesByUser = async (req, res) => {
   } catch (error) {
     console.error('Error fetching nearest pharmacies:', error);
     res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+
+
+export const addToCart = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { medicineId, quantity, inc, dec } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(medicineId)) {
+      return res.status(400).json({ message: 'Invalid medicine ID' });
+    }
+
+    // Fetch medicine
+    const medicine = await Medicine.findById(medicineId).populate('pharmacyId');
+    if (!medicine) {
+      return res.status(404).json({ message: 'Medicine not found' });
+    }
+
+    let cart = await Cart.findOne({ userId });
+
+    if (!cart) {
+      // If cart doesn't exist, create new cart with one item
+      cart = new Cart({
+        userId,
+        items: [
+          {
+            medicineId,
+            quantity: quantity || 1,
+            name: medicine.name,
+            price: medicine.mrp, // Use the price (mrp) here
+            images: medicine.images, // Assuming images is an array in the Medicine model
+            description: medicine.description, // Assuming description exists in the Medicine model
+            pharmacy: medicine.pharmacyId, // Pharmacy reference
+          },
+        ],
+      });
+    } else {
+      const itemIndex = cart.items.findIndex(
+        (item) => item.medicineId.toString() === medicineId
+      );
+
+      if (itemIndex > -1) {
+        // Item exists in cart
+        if (inc) {
+          cart.items[itemIndex].quantity += 1;
+        } else if (dec) {
+          cart.items[itemIndex].quantity = Math.max(1, cart.items[itemIndex].quantity - 1);
+        } else if (quantity) {
+          // direct quantity set if inc/dec not passed
+          cart.items[itemIndex].quantity = quantity;
+        }
+      } else {
+        // Item not in cart, push new
+        cart.items.push({
+          medicineId,
+          quantity: quantity || 1,
+          name: medicine.name,
+          price: medicine.mrp, // Use the price (mrp)
+          images: medicine.images,
+          description: medicine.description,
+          pharmacy: medicine.pharmacyId,
+        });
+      }
+    }
+
+    // Calculate subTotal using mrp
+    let subTotal = 0;
+    for (const item of cart.items) {
+      const med = await Medicine.findById(item.medicineId);
+      if (med) {
+        subTotal += med.mrp * item.quantity; // Use mrp for price
+      }
+    }
+
+    cart.subTotal = subTotal;
+    cart.platformFee = 10; // fixed platform fee
+    cart.deliveryCharge = 22; // fixed delivery charge
+    cart.totalPayable = cart.subTotal + cart.platformFee + cart.deliveryCharge;
+
+    await cart.save();
+
+    return res.status(200).json({
+      message: 'Cart updated successfully',
+      cart,
+    });
+  } catch (error) {
+    console.error('Add to Cart Error:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+export const getCart = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const cart = await Cart.findOne({ userId })
+      .populate({
+        path: 'items.medicineId',
+        select: 'name price images description pharmacyId',
+        populate: {
+          path: 'pharmacyId',
+          select: 'name location'
+        }
+      });
+
+    if (!cart) {
+      // Cart nahi mila, empty response with zero values
+      return res.status(200).json({
+        message: 'Cart fetched successfully',
+        cart: {
+          items: [],
+          totalItems: 0,
+          subTotal: 0,
+          platformFee: 0,
+          deliveryCharge: 0,
+          totalPayable: 0
+        }
+      });
+    }
+
+    const totalItems = cart.items.reduce((acc, item) => acc + item.quantity, 0);
+
+    if (totalItems === 0) {
+      // Cart hai par items nahi, sab zero show karo
+      return res.status(200).json({
+        message: 'Cart fetched successfully',
+        cart: {
+          items: [],
+          totalItems: 0,
+          subTotal: 0,
+          platformFee: 0,
+          deliveryCharge: 0,
+          totalPayable: 0
+        }
+      });
+    }
+
+    // Items hain, fixed platformFee and deliveryCharge dikhao
+    return res.status(200).json({
+      message: 'Cart fetched successfully',
+      cart: {
+        items: cart.items.map(item => ({
+          medicineId: item.medicineId._id,
+          name: item.medicineId.name,
+          price: item.medicineId.mrp,
+          images: item.medicineId.images,
+          description: item.medicineId.description,
+          pharmacy: item.medicineId.pharmacyId,
+          quantity: item.quantity,
+          totalPrice: item.medicineId.price * item.quantity
+        })),
+        totalItems,
+        subTotal: cart.subTotal,
+        platformFee: 10,     // static value shown only if items exist
+        deliveryCharge: 22,  // static value shown only if items exist
+        totalPayable: cart.subTotal + 10 + 22
+      }
+    });
+
+  } catch (error) {
+    console.error('Get Cart Error:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+export const removeFromCart = async (req, res) => {
+  try {
+    const { userId, medicineId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(medicineId)) {
+      return res.status(400).json({ message: 'Invalid medicine ID' });
+    }
+
+    const cart = await Cart.findOne({ userId });
+    if (!cart) {
+      return res.status(404).json({ message: 'Cart not found for this user' });
+    }
+
+    // Filter out the medicine to be removed
+    const initialLength = cart.items.length;
+    cart.items = cart.items.filter(item => item.medicineId.toString() !== medicineId);
+
+    if (cart.items.length === initialLength) {
+      return res.status(404).json({ message: 'Medicine not found in cart' });
+    }
+
+    // Recalculate subTotal
+    let subTotal = 0;
+    for (const item of cart.items) {
+      const med = await Medicine.findById(item.medicineId);
+      if (med) {
+        subTotal += med.price * item.quantity;
+      }
+    }
+
+    cart.subTotal = subTotal;
+    cart.totalPayable = cart.subTotal + cart.platformFee + cart.deliveryCharge;
+
+    await cart.save();
+
+    return res.status(200).json({
+      message: 'Medicine removed from cart successfully',
+      cart
+    });
+
+  } catch (error) {
+    console.error('Remove from Cart Error:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+export const addAddress = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { house, street, city, state, pincode, country } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    if (!house || !street || !city || !state || !pincode || !country) {
+      return res.status(400).json({ message: 'Please provide all address fields' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.myAddresses.push({ house, street, city, state, pincode, country });
+
+    await user.save();
+
+    return res.status(201).json({
+      message: 'Address added successfully',
+      myAddresses: user.myAddresses
+    });
+
+  } catch (error) {
+    console.error('Add Address Error:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+export const getAddresses = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    return res.status(200).json({
+      message: 'User addresses fetched successfully',
+      myAddresses: user.myAddresses || []
+    });
+
+  } catch (error) {
+    console.error('Get Addresses Error:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+/// Utility: Haversine formula to calculate distance in km
+const calculateDistance = (coord1, coord2) => {
+  const toRad = (value) => (value * Math.PI) / 180;
+  const [lon1, lat1] = coord1;
+  const [lon2, lat2] = coord2;
+
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+// Delivery charge calculation per km (adjust rate as needed)
+const calculateDeliveryCharge = (distanceKm) => {
+  const ratePerKm = 5; // 5 currency units per km
+  return Math.ceil(distanceKm * ratePerKm);
+};
+
+export const createBookingFromCart = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { addressId, notes, voiceNoteUrl, paymentMethod, transactionId } = req.body;
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(userId))
+      return res.status(400).json({ message: "Invalid user ID" });
+
+    if (!mongoose.Types.ObjectId.isValid(addressId))
+      return res.status(400).json({ message: "Invalid address ID" });
+
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const deliveryAddress = user.myAddresses.id(addressId);
+    if (!deliveryAddress) return res.status(404).json({ message: "Address not found" });
+
+    // Fetch cart and validate
+    const cart = await Cart.findOne({ userId }).populate({
+      path: "items.medicineId",
+      select: "name mrp images description pharmacyId",
+    });
+
+    if (!cart || cart.items.length === 0) {
+      return res.status(400).json({ message: "Cart is empty" });
+    }
+
+    // Prepare order items from cart
+    const orderItems = cart.items.map((item) => ({
+      medicineId: item.medicineId._id,
+      quantity: item.quantity,
+      name: item.medicineId.name,
+      price: item.price, // mrp from cart item
+      images: item.medicineId.images,
+      description: item.medicineId.description,
+      pharmacy: item.medicineId.pharmacyId,
+    }));
+
+    // Use stored cart totals
+    const subTotal = cart.subTotal;
+    const platformFee = cart.platformFee;
+    const deliveryCharge = cart.deliveryCharge;
+
+    const totalAmount = cart.totalPayable;
+
+    // Find nearest rider based on user's location
+    const allRiders = await Rider.find();
+    let nearestRider = null;
+    let minDistance = Infinity;
+
+    const userLat = user.location?.coordinates[1] || 0;
+    const userLon = user.location?.coordinates[0] || 0;
+
+    allRiders.forEach((rider) => {
+      if (!rider.latitude || !rider.longitude) return;
+      const riderLat = parseFloat(rider.latitude);
+      const riderLon = parseFloat(rider.longitude);
+      const distance = calculateDistance([riderLon, riderLat], [userLon, userLat]);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestRider = rider;
+      }
+    });
+
+    // Override delivery charge if you want to calculate dynamically
+    // If you want to trust cart.deliveryCharge, comment below line
+    // const deliveryChargeDynamic = nearestRider ? calculateDeliveryCharge(minDistance) : 0;
+
+    // Payment Handling
+    let paymentStatus = "Pending";
+    let verifiedPaymentDetails = null;
+
+    if (paymentMethod !== "Cash on Delivery") {
+      if (!transactionId) {
+        return res.status(400).json({
+          message: "Transaction ID is required for online payments",
+        });
+      }
+
+      try {
+        const paymentInfo = await razorpay.payments.fetch(transactionId);
+        if (!paymentInfo) {
+          return res.status(404).json({ message: "Payment not found" });
+        }
+
+        if (paymentInfo.status === "authorized") {
+          await razorpay.payments.capture(transactionId, totalAmount * 100, "INR");
+        }
+
+        verifiedPaymentDetails = await razorpay.payments.fetch(transactionId);
+
+        if (verifiedPaymentDetails.status !== "captured") {
+          return res.status(400).json({
+            message: `Payment not captured. Status: ${verifiedPaymentDetails.status}`,
+          });
+        }
+
+        paymentStatus = "Captured";
+      } catch (err) {
+        console.error("Razorpay verification error:", err);
+        return res.status(500).json({ message: "Payment verification failed", error: err.message });
+      }
+    }
+
+    // Create new order
+    const newOrder = new Order({
+      userId,
+      deliveryAddress,
+      orderItems,
+      subTotal,
+      platformFee,
+      deliveryCharge,
+      totalAmount,
+      notes: notes || "",
+      voiceNoteUrl: voiceNoteUrl || "",
+      paymentMethod,
+      transactionId: transactionId || null,
+      paymentStatus,
+      status: "Pending",
+      statusTimeline: [
+        { status: "Pending", message: "Order placed", timestamp: new Date() },
+      ],
+      assignedRider: nearestRider?._id || null,
+      assignedRiderStatus: nearestRider ? "Assigned" : null,
+      razorpayOrder: verifiedPaymentDetails || null,
+    });
+
+    // Rider Notification
+    if (nearestRider) {
+      newOrder.statusTimeline.push({
+        status: "Rider Assigned",
+        message: `Rider ${nearestRider.name} assigned`,
+        timestamp: new Date(),
+      });
+
+      nearestRider.notifications.push({
+        message: `New order assigned to you from ${user.name}`,
+        order: {
+          _id: newOrder._id,
+          user: {
+            _id: user._id,
+            name: user.name,
+            phone: user.phone,
+          },
+          deliveryAddress,
+          orderItems,
+          subTotal,
+          platformFee,
+          deliveryCharge,
+          totalAmount,
+          notes: notes || "",
+          voiceNoteUrl: voiceNoteUrl || "",
+          paymentMethod,
+          paymentStatus,
+          status: newOrder.status,
+          statusTimeline: newOrder.statusTimeline,
+        },
+      });
+
+      await nearestRider.save();
+    }
+
+    // Save order and clear cart only after success
+    await newOrder.save();
+
+    cart.items = [];
+    cart.subTotal = 0;
+    cart.platformFee = 0;
+    cart.deliveryCharge = 0;
+    cart.totalPayable = 0;
+    await cart.save();
+
+    await Notification.create({
+      type: "Order",
+      referenceId: newOrder._id,
+      message: `New order placed by ${user.name}`,
+      status: "Pending",
+    });
+
+    return res.status(201).json({
+      message: "Order placed successfully",
+      order: newOrder,
+    });
+  } catch (error) {
+    console.error("Error in booking:", error);
+    return res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+
+export const getMyBookings = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // User ID validation
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    // Fetch bookings for user
+    const bookings = await Order.find({ userId })
+      .sort({ createdAt: -1 }) // Latest first
+      .populate({
+        path: 'orderItems.medicineId',
+        select: 'name price images description'
+      });
+
+    return res.status(200).json({
+      message: 'Bookings fetched successfully',
+      totalBookings: bookings.length,
+      bookings
+    });
+
+  } catch (error) {
+    console.error('Get My Bookings Error:', error);
+    return res.status(500).json({
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+
+
+export const cancelOrder = async (req, res) => {
+  try {
+    const { userId, orderId } = req.params;
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order ID" });
+    }
+
+    // Find order by ID and user
+    const order = await Order.findOne({ _id: orderId, userId });
+    if (!order) {
+      return res.status(404).json({ message: "Order not found for this user" });
+    }
+
+    // Check if already cancelled or delivered
+    if (order.status === "Cancelled") {
+      return res.status(400).json({ message: "Order is already cancelled" });
+    }
+    if (order.status === "Delivered") {
+      return res.status(400).json({ message: "Delivered orders cannot be cancelled" });
+    }
+
+    // Cancel the order
+    order.status = "Cancelled";
+    await order.save();
+
+    return res.status(200).json({
+      message: "Order cancelled successfully",
+      order
+    });
+
+  } catch (error) {
+    console.error("Cancel Order Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+
+export const getPreviousOrders = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // User ID validation
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    // Fetch sirf Delivered orders
+    const previousOrders = await Order.find({
+      userId,
+      status: 'Delivered' // status exactly match hona chahiye
+    })
+      .sort({ createdAt: -1 }) // Latest delivered first
+      .populate({
+        path: 'orderItems.medicineId',
+        select: 'name price images description'
+      });
+
+    return res.status(200).json({
+      message: 'Previous (Delivered) orders fetched successfully',
+      totalDeliveredOrders: previousOrders.length,
+      orders: previousOrders
+    });
+
+  } catch (error) {
+    console.error('Get Previous Orders Error:', error);
+    return res.status(500).json({
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+
+
+
+export const getSinglePreviousOrder = async (req, res) => {
+  try {
+    const { userId, orderId } = req.params;
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order ID" });
+    }
+
+    // Find the delivered order for this user
+    const order = await Order.findOne({
+      _id: orderId,
+      userId,
+      status: "Delivered"
+    }).populate({
+      path: "orderItems.medicineId",
+      select: "name price images description"
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Delivered order not found for this user"
+      });
+    }
+
+    return res.status(200).json({
+      message: "Delivered order fetched successfully",
+      order
+    });
+
+  } catch (error) {
+    console.error("Get Single Previous Order Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+export const removeDeliveredOrder = async (req, res) => {
+  try {
+    const { userId, orderId } = req.params;
+
+    // ID validations
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: 'Invalid order ID' });
+    }
+
+    // Find order by userId & orderId
+    const order = await Order.findOne({ _id: orderId, userId });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found for this user' });
+    }
+
+    // Check status before removing
+    if (order.status !== 'Delivered') {
+      return res.status(400).json({ message: 'Only Delivered orders can be removed' });
+    }
+
+    // Remove order
+    await order.deleteOne();
+
+    return res.status(200).json({
+      message: 'Delivered order removed successfully',
+      removedOrderId: orderId
+    });
+
+  } catch (error) {
+    console.error('Remove Delivered Order Error:', error);
+    return res.status(500).json({
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+
+
+export const getNotifications = async (req, res) => {
+  const { userId } = req.params;
+
+  // Validate userId
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(400).json({ message: 'Invalid user ID' });
+  }
+
+  try {
+    const user = await User.findById(userId).select('notifications');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const sortedNotifications = [...user.notifications].sort((a, b) => b.timestamp - a.timestamp);
+
+    return res.status(200).json({
+      message: 'Notifications fetched successfully',
+      total: sortedNotifications.length,
+      notifications: sortedNotifications
+    });
+
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
+    return res.status(500).json({
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+
+
+// ✅ Create new query
+export const createQuery = async (req, res) => {
+  try {
+    const { name, email, mobile, message } = req.body;
+    const query = new Query({ name, email, mobile, message });
+    await query.save();
+    res.status(201).json({ message: "Query submitted successfully", query });
+  } catch (error) {
+    res.status(500).json({ message: "Error creating query", error });
+  }
+};
+
+
+// 🌟 Send Prescription (image/pdf upload) using params
+export const sendPrescription = async (req, res) => {
+  try {
+    const { userId, pharmacyId } = req.params;
+    const { notes } = req.body;
+
+    if (!userId || !pharmacyId) {
+      return res.status(400).json({ message: "userId and pharmacyId are required in params" });
+    }
+
+    if (!req.files || !req.files.prescriptionFile) {
+      return res.status(400).json({ message: "Prescription file is required" });
+    }
+
+    const file = req.files.prescriptionFile;
+
+    // 📤 Upload to Cloudinary
+    const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: "prescriptions",
+      resource_type: "auto", // image/pdf/other types
+    });
+
+    const prescription = new Prescription({
+      userId,
+      pharmacyId,
+      prescriptionUrl: uploaded.secure_url,
+      notes: notes || "",
+    });
+
+    await prescription.save();
+
+    res.status(201).json({
+      message: "Prescription sent successfully",
+      prescription,
+    });
+  } catch (error) {
+    console.error("Send Prescription Error:", error);
+    res.status(500).json({ message: "Error sending prescription", error: error.message });
+  }
+};
+
+
+
+// ✅ Get Prescriptions for a User using params
+export const getPrescriptionsForUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required in params" });
+    }
+
+    const prescriptions = await Prescription.find({ userId })
+      .populate("pharmacyId", "name email phone") // populate pharmacy info
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      message: "User prescriptions fetched successfully",
+      prescriptions,
+    });
+  } catch (error) {
+    console.error("Get User Prescriptions Error:", error);
+    res.status(500).json({ message: "Error fetching user prescriptions", error: error.message });
+  }
+};
+
+
+
+// 📤 Get statusTimeline and medicine details of latest order for a user
+export const getUserOrderStatuses = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Fetch latest order with populated medicine details
+    const latestOrder = await Order.findOne({ userId })
+      .sort({ createdAt: -1 }) // latest order
+      .select("statusTimeline orderItems") // Include orderItems for medicine details
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name mrp description images", // Add more if needed
+      });
+
+    if (!latestOrder) {
+      return res.status(404).json({ message: "No order found for this user" });
+    }
+
+    const timeline = latestOrder.statusTimeline;
+
+    // Check if "PickedUp" status exists in timeline
+    const isPickedUp = timeline.some(item => item.status === "PickedUp");
+
+    // Format medicine details
+    const medicines = latestOrder.orderItems.map(item => ({
+      name: item?.medicineId?.name || "Unknown",
+      mrp: item?.medicineId?.mrp || 0,
+      description: item?.medicineId?.description || "",
+      images: item?.medicineId?.images || [], // Expecting array of image URLs or paths
+      quantity: item?.quantity || 1,
+    }));
+
+    return res.status(200).json({
+      message: "Latest order statusTimeline fetched successfully",
+      statusTimeline: timeline,
+      deliveryNote: isPickedUp ? "Your order will be delivered in 10 mins" : null,
+      medicines, // 🆕 Added medicine details
+    });
+
+  } catch (error) {
+    console.error("Error fetching statusTimeline:", error);
+    return res.status(500).json({ message: "Server error while fetching statusTimeline" });
+  }
+};
+
+
+
+
+export const reorderDeliveredOrder = async (req, res) => {
+  try {
+    const { userId, orderId } = req.params;
+    const { paymentMethod, transactionId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(userId))
+      return res.status(400).json({ message: "Invalid user ID" });
+
+    if (!mongoose.Types.ObjectId.isValid(orderId))
+      return res.status(400).json({ message: "Invalid order ID" });
+
+    const validPayments = [
+      "Credit/Debit card", "Phonepe", "Google pay", "Paytm", "Cash on Delivery", "Online"
+    ];
+    if (!paymentMethod || !validPayments.includes(paymentMethod))
+      return res.status(400).json({ message: "Invalid payment method" });
+
+    const originalOrder = await Order.findOne({ _id: orderId, status: "Delivered" });
+    if (!originalOrder)
+      return res.status(404).json({ message: "Delivered order not found" });
+
+    if (originalOrder.userId.toString() !== userId)
+      return res.status(403).json({ message: "Unauthorized reorder attempt" });
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const deliveryAddress = originalOrder.deliveryAddress;
+
+    // ✅ Rebuild order items using fresh medicine data to get current MRP
+    let orderItems = [];
+    let subTotal = 0;
+
+    for (const item of originalOrder.orderItems) {
+      const medicine = await Medicine.findById(item.medicineId);
+      if (!medicine)
+        return res.status(404).json({ message: `Medicine not found: ${item.medicineId}` });
+
+      const currentMRP = medicine.mrp || 0;
+      const qty = item.quantity || 1;
+
+      orderItems.push({
+        medicineId: medicine._id,
+        quantity: qty,
+        name: medicine.name,
+        price: currentMRP,
+        images: medicine.images,
+        description: medicine.description,
+        pharmacy: medicine.pharmacyId,
+      });
+
+      subTotal += currentMRP * qty;
+    }
+
+    const platformFee = 10;
+
+    // ✅ Find nearest rider
+    const allRiders = await Rider.find();
+    let nearestRider = null;
+    let minDistance = Infinity;
+
+    const userLat = user.location?.coordinates[1] || 0;
+    const userLon = user.location?.coordinates[0] || 0;
+
+    for (let rider of allRiders) {
+      if (!rider.latitude || !rider.longitude) continue;
+
+      const distance = calculateDistance(
+        [parseFloat(rider.longitude), parseFloat(rider.latitude)],
+        [userLon, userLat]
+      );
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestRider = rider;
+      }
+    }
+
+    const deliveryCharge = nearestRider ? calculateDeliveryCharge(minDistance) : 0;
+    const totalAmount = subTotal + platformFee + deliveryCharge;
+
+    if (isNaN(totalAmount)) {
+      return res.status(500).json({ message: "Invalid total amount (NaN)" });
+    }
+
+    // ✅ Payment processing
+    let paymentStatus = "Pending";
+    let verifiedPaymentDetails = null;
+
+    if (paymentMethod !== "Cash on Delivery") {
+      if (!transactionId)
+        return res.status(400).json({ message: "Transaction ID is required for online payment" });
+
+      try {
+        const paymentInfo = await razorpay.payments.fetch(transactionId);
+        if (!paymentInfo)
+          return res.status(404).json({ message: "Payment not found" });
+
+        const amountToCapture = paymentInfo.amount;
+
+        if (paymentInfo.status === "authorized") {
+          await razorpay.payments.capture(transactionId, amountToCapture, "INR");
+        }
+
+        verifiedPaymentDetails = await razorpay.payments.fetch(transactionId);
+        if (verifiedPaymentDetails.status !== "captured") {
+          return res.status(400).json({
+            message: `Payment not captured. Status: ${verifiedPaymentDetails.status}`,
+          });
+        }
+
+        // ✅ Set to "Completed" instead of "Captured"
+        paymentStatus = "Completed";
+      } catch (err) {
+        console.error("Razorpay Error:", err);
+        return res.status(500).json({
+          message: "Payment verification failed",
+          error: err.message,
+        });
+      }
+    }
+
+    // ✅ Create new order
+    const newOrder = new Order({
+      userId,
+      deliveryAddress,
+      orderItems,
+      subTotal,
+      platformFee,
+      deliveryCharge,
+      totalAmount,
+      notes: originalOrder.notes,
+      voiceNoteUrl: originalOrder.voiceNoteUrl,
+      paymentMethod,
+      transactionId: transactionId || null,
+      paymentStatus,
+      status: "Pending",
+      statusTimeline: [
+        {
+          status: "Pending",
+          message: "Order placed via reorder",
+          timestamp: new Date(),
+        },
+      ],
+      assignedRider: nearestRider?._id || null,
+      assignedRiderStatus: nearestRider ? "Assigned" : null,
+      razorpayOrder: verifiedPaymentDetails || null,
+      isReordered: true,
+    });
+
+    // ✅ Rider notification
+    if (nearestRider) {
+      newOrder.statusTimeline.push({
+        status: "Rider Assigned",
+        message: `Rider ${nearestRider.name} assigned`,
+        timestamp: new Date(),
+      });
+
+      nearestRider.notifications.push({
+        message: `New order assigned via reorder from ${user.name}`,
+        order: {
+          _id: newOrder._id,
+          user: {
+            _id: user._id,
+            name: user.name,
+            phone: user.phone,
+          },
+          deliveryAddress,
+          orderItems,
+          subTotal,
+          platformFee,
+          deliveryCharge,
+          totalAmount,
+          paymentMethod,
+          paymentStatus,
+          status: newOrder.status,
+          statusTimeline: newOrder.statusTimeline,
+        },
+      });
+
+      await nearestRider.save();
+    }
+
+    await newOrder.save();
+
+    await Notification.create({
+      type: "Order",
+      referenceId: newOrder._id,
+      message: `New reorder placed by ${user.name}`,
+      status: "Pending",
+    });
+
+    return res.status(201).json({
+      message: "Order placed successfully via reorder",
+      orderId: newOrder._id,
+      status: newOrder.status,
+      paymentStatus,
+    });
+
+  } catch (error) {
+    console.error("Reorder Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+export const togglePeriodicMedsPlan = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { isActive } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).json({ message: "isActive must be true or false" });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { "periodicMedsPlan.isActive": isActive },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      message: `Periodic Meds Plan ${isActive ? "activated" : "deactivated"} successfully.`,
+      periodicMedsPlan: user.periodicMedsPlan,
+    });
+
+  } catch (error) {
+    console.error("Error toggling periodic plan:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const createPeriodicOrders = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { planType, orderItems, deliveryDates, notes, voiceNoteUrl } = req.body;
+
+    // Fixed platform charge
+    const platformCharge = 20;
+
+    // Validate userId
+    if (!mongoose.Types.ObjectId.isValid(userId))
+      return res.status(400).json({ message: "Invalid user ID" });
+
+    // Validate planType
+    if (!planType || !["Weekly", "Monthly"].includes(planType))
+      return res.status(400).json({ message: "planType must be 'Weekly' or 'Monthly'" });
+
+    // Validate orderItems
+    if (!orderItems || !Array.isArray(orderItems) || orderItems.length === 0 || orderItems.some(item => !item.medicineId || !item.quantity)) {
+      return res.status(400).json({ message: "orderItems must be non-empty array with medicineId and quantity" });
+    }
+
+    // Validate deliveryDates
+    if (!deliveryDates || !Array.isArray(deliveryDates) || deliveryDates.length === 0 || deliveryDates.some(date => isNaN(new Date(date).getTime()))) {
+      return res.status(400).json({ message: "deliveryDates must be non-empty array of valid dates" });
+    }
+
+    // Find user and address
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (!user.myAddresses || user.myAddresses.length === 0)
+      return res.status(400).json({ message: "User has no saved addresses" });
+
+    const deliveryAddress = user.myAddresses[0];
+
+    // Find nearest rider & distance
+    const allRiders = await Rider.find();
+    let nearestRider = null;
+    let minDistance = Infinity;
+
+    const userLat = user.location?.coordinates[1] || 0;
+    const userLon = user.location?.coordinates[0] || 0;
+
+    for (const rider of allRiders) {
+      if (!rider.latitude || !rider.longitude) continue;
+      const riderLat = parseFloat(rider.latitude);
+      const riderLon = parseFloat(rider.longitude);
+      const distance = calculateDistance([riderLon, riderLat], [userLon, userLat]);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestRider = rider;
+      }
+    }
+
+    if (!nearestRider)
+      return res.status(400).json({ message: "No riders available currently" });
+
+    // Calculate subtotal from orderItems by fetching medicine price (MRP)
+    let subtotal = 0;
+    for (const item of orderItems) {
+      const med = await Medicine.findById(item.medicineId);
+      if (!med) return res.status(400).json({ message: `Medicine not found: ${item.medicineId}` });
+      subtotal += med.mrp * item.quantity;
+      // Enrich orderItems with medicine details
+      item.name = med.name;
+      item.price = med.mrp;
+      item.images = med.images || [];
+      item.description = med.description || "";
+      item.pharmacy = med.pharmacy || null;
+    }
+
+    // Calculate delivery charge based on distance and rider's base delivery charge
+    const deliveryCharge = nearestRider.deliveryCharge ? nearestRider.deliveryCharge * minDistance : 0;
+
+    // Calculate total
+    const total = subtotal + deliveryCharge + platformCharge;
+
+    // Create orders for each delivery date
+    const createdOrders = [];
+
+    for (const date of deliveryDates) {
+      const order = new Order({
+        userId,
+        deliveryAddress,
+        orderItems,
+        deliveryDate: new Date(date),
+        planType,
+        subtotal,
+        total,
+        deliveryCharge,
+        platformCharge,
+        paymentMethod: "Cash on Delivery",
+        paymentStatus: "Pending",
+        status: "Pending",
+        statusTimeline: [{ status: "Pending", message: "Order placed", timestamp: new Date() }],
+        notes: notes || "",
+        voiceNoteUrl: voiceNoteUrl || "",
+        assignedRider: nearestRider._id,
+        assignedRiderStatus: "Assigned",
+      });
+
+      order.statusTimeline.push({
+        status: "Rider Assigned",
+        message: `Rider ${nearestRider.name} assigned`,
+        timestamp: new Date(),
+      });
+
+      nearestRider.notifications.push({
+        message: `New order assigned to you from ${user.name}`,
+        order: {
+          _id: order._id,
+          user: { _id: user._id, name: user.name, phone: user.phone || user.mobile },
+          deliveryAddress,
+          orderItems,
+          notes: notes || "",
+          voiceNoteUrl: voiceNoteUrl || "",
+          paymentMethod: order.paymentMethod,
+          paymentStatus: order.paymentStatus,
+          status: order.status,
+          statusTimeline: order.statusTimeline,
+          subtotal,
+          total,
+          deliveryCharge,
+          platformCharge,
+        },
+      });
+
+      await nearestRider.save();
+      await order.save();
+
+      createdOrders.push(order);
+    }
+
+    return res.status(201).json({
+      message: "Periodic orders created successfully",
+      orders: createdOrders.map(o => ({
+        _id: o._id,
+        deliveryDate: o.deliveryDate,
+        subtotal: o.subtotal,
+        total: o.total,
+        deliveryCharge: o.deliveryCharge,
+        platformCharge: o.platformCharge,
+      })),
+    });
+  } catch (error) {
+    console.error("Error creating periodic orders:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const getUserPeriodicOrders = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Validate userId
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    // Check if user exists (optional, but good to have)
+    const userExists = await User.findById(userId);
+    if (!userExists) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const orders = await Order.find({ userId })
+      .populate("assignedRider", "name phone")
+      .sort({ deliveryDate: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: orders.length,
+      orders: orders.map(order => ({
+        _id: order._id,
+        deliveryDate: order.deliveryDate,
+        deliveryAddress: order.deliveryAddress,
+        orderItems: order.orderItems,
+        subtotal: order.subtotal,
+        total: order.total,
+        deliveryCharge: order.deliveryCharge,
+        platformCharge: order.platformCharge,
+        planType: order.planType,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        status: order.status,
+        statusTimeline: order.statusTimeline,
+        notes: order.notes,
+        voiceNoteUrl: order.voiceNoteUrl,
+        assignedRider: order.assignedRider,
+        assignedRiderStatus: order.assignedRiderStatus,
+        createdAt: order.createdAt,
+      })),
+    });
+
+  } catch (error) {
+    console.error("Error fetching user orders:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+
+// 🌟 Send Prescription (image/pdf upload) using userId and pharmacyId
+export const sendPrescriptionToAdmin = async (req, res) => {
+  try {
+    const { userId, pharmacyId } = req.params;  // assuming you want to pass both in the URL params
+
+    if (!userId) {
+      return res.status(400).json({ message: "userId is required in params" });
+    }
+
+    if (!pharmacyId) {
+      return res.status(400).json({ message: "pharmacyId is required in params" });
+    }
+
+    if (!req.files || !req.files.prescriptionFile) {
+      return res.status(400).json({ message: "Prescription file is required" });
+    }
+
+    const file = req.files.prescriptionFile;
+
+    // 📤 Upload to Cloudinary
+    const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: "prescriptions",
+      resource_type: "auto", // image/pdf/other types
+    });
+
+    // Create the Prescription entry with userId, pharmacyId, and the uploaded file URL
+    const prescription = new Prescription({
+      userId,
+      pharmacyId,  // Added pharmacyId here
+      prescriptionUrl: uploaded.secure_url,
+    });
+
+    await prescription.save();
+
+    res.status(201).json({
+      message: "Prescription sent successfully",
+      prescription,
+    });
+  } catch (error) {
+    console.error("Send Prescription Error:", error);
+    res.status(500).json({ message: "Error sending prescription", error: error.message });
+  }
+};
+
+
+
+// Send message between Rider and User
+export const sendMessage = async (req, res) => {
+  try {
+    const { riderId, userId } = req.params;
+    const { message, senderType } = req.body;
+
+    // Validate message and sender type
+    if (!message || message.trim().length === 0) {
+      return res.status(400).json({ success: false, message: "Message must be provided." });
+    }
+
+    if (senderType !== 'rider' && senderType !== 'user') {
+      return res.status(400).json({ success: false, message: "Invalid senderType. Must be 'rider' or 'user'." });
+    }
+
+    // Validate that both rider and user exist
+    const rider = await Rider.findById(riderId);
+    const user = await User.findById(userId);
+
+    if (!rider || !user) {
+      return res.status(404).json({ success: false, message: "Rider or User not found." });
+    }
+
+    // Create and save new chat message
+    const newMessage = new Chat({
+      riderId,
+      userId,
+      message: message.trim(),
+      senderType,
+      timestamp: new Date(),
+    });
+
+    const savedMessage = await newMessage.save();
+
+    // Emit message to the connected room
+    const roomId = `${riderId}_${userId}`;
+    const io = req.app.get("io");
+
+    if (io) {
+      io.to(roomId).emit('receiveMessage', savedMessage);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: savedMessage,
+    });
+
+  } catch (error) {
+    console.error("❌ Error sending message:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error sending message",
+      error: error.message,
+    });
+  }
+};
+
+// Get chat history between Rider and User
+export const getChatHistory = async (req, res) => {
+  try {
+    const { riderId, userId } = req.params;
+
+    // Validate MongoDB ObjectIds
+    if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid riderId or userId.',
+      });
+    }
+
+    const riderObjectId = new mongoose.Types.ObjectId(riderId);
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+
+    // Fetch all messages between Rider and User
+    const messages = await Chat.find({
+      $or: [
+        { riderId: riderObjectId, userId: userObjectId },
+        { riderId: userObjectId, userId: riderObjectId },
+      ],
+    }).sort({ timestamp: 1 });
+
+    if (!messages.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'No chat history found.',
+      });
+    }
+
+    // Fetch names for mapping
+    const [rider, user] = await Promise.all([
+      Rider.findById(riderId),
+      User.findById(userId)
+    ]);
+
+    if (!rider || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Either the rider or user does not exist.',
+      });
+    }
+
+    // Format and return messages
+    const formattedMessages = messages.map((message) => {
+      const isSenderRider = String(message.riderId) === String(riderId);
+      const isReceiverRider = String(message.userId) === String(riderId);
+
+      return {
+        ...message.toObject(),
+        timestamp: message.timestamp.toISOString(),
+        sender: isSenderRider ? rider.name : user.name,
+        receiver: isReceiverRider ? rider.name : user.name,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      messages: formattedMessages,
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching chat:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error fetching chat history',
+      error: error.message,
+    });
   }
 };

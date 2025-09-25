@@ -1,0 +1,1637 @@
+import User from '../Models/User.js'
+import Order from '../Models/Order.js'
+import mongoose from 'mongoose';
+import Admin from '../Models/Admin.js';
+import cloudinary from '../config/cloudinary.js';
+import Rider from '../Models/Rider.js';
+import Ad from '../Models/Ad.js';
+import Query from '../Models/Query.js';
+import Prescription from '../Models/Prescription.js';
+import { Notification } from '../Models/Notification.js';
+import Pharmacy from '../Models/Pharmacy.js';
+import Banner from '../Models/Banner.js';
+import withdrawalRequestModel from '../Models/withdrawalRequestModel.js';
+import Medicine from '../Models/Medicine.js';
+import Message from '../Models/Message.js';
+
+
+
+
+export const registerAdmin = async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+
+    // 🔍 Validate inputs
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Name, email, and password are required' });
+    }
+
+    // 📧 Check if admin already exists
+    const existingAdmin = await Admin.findOne({ email });
+    if (existingAdmin) {
+      return res.status(400).json({ message: 'Admin already registered with this email' });
+    }
+
+    // ❌ No hashing
+    const newAdmin = new Admin({ name, email, password });
+
+    await newAdmin.save();
+
+    return res.status(201).json({
+      message: 'Admin registered successfully',
+      admin: {
+        id: newAdmin._id,
+        name: newAdmin.name,
+        email: newAdmin.email,
+        createdAt: newAdmin.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Register Admin Error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+
+export const loginAdmin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // 🛡️ Validate inputs
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required' });
+    }
+
+    // 🔍 Find admin
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    // 🔓 Plaintext password check
+    if (admin.password !== password) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    // ✅ Return success (no token)
+    return res.status(200).json({
+      message: 'Login successful',
+      admin: {
+        id: admin._id,
+        name: admin.name,
+        email: admin.email
+      }
+    });
+
+  } catch (error) {
+    console.error('Login Admin Error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+
+export const updateOrderStatus = async (req, res) => {
+  const { userId, orderId } = req.params;
+  const { status, message } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(orderId)) {
+    return res.status(400).json({ message: 'Invalid user or order ID' });
+  }
+
+  if (!status || !message) {
+    return res.status(400).json({ message: 'Status and message are required' });
+  }
+
+  try {
+    // 🧾 Find and validate order
+    const order = await Order.findById(orderId);
+    if (!order || order.userId.toString() !== userId) {
+      return res.status(404).json({ message: 'Order not found for this user' });
+    }
+
+    // 🛠️ Update current status & push status timeline
+    order.status = status;
+    order.statusTimeline.push({
+      status,
+      message,
+      timestamp: new Date()
+    });
+
+    await order.save();
+
+    // 🛎️ Push new notification to user
+    const newNotification = {
+      orderId: order._id,
+      status,
+      message,
+      timestamp: new Date(),
+      read: false
+    };
+
+    await User.findByIdAndUpdate(userId, {
+      $push: { notifications: newNotification }
+    });
+
+    return res.status(200).json({
+      message: 'Order status updated and notification sent',
+      status,
+      orderId
+    });
+
+  } catch (error) {
+    console.error('Error updating status:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+// Get All Users
+// Get All Users with Addresses
+export const getAllUsers = async (req, res) => {
+  try {
+    const users = await User.find();
+
+    if (!users || users.length === 0) {
+      return res.status(404).json({ message: 'No users found!' });
+    }
+
+    // Format each user with address
+    const formattedUsers = users.map(user => ({
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      mobile: user.mobile,
+      aadhaarCardNumber: user.aadhaarCardNumber,
+      profileImage: user.profileImage || 'https://img.freepik.com/premium-vector/student-avatar-illustration-user-profile-icon-youth-avatar_118339-4406.jpg?w=2000',
+      addresses: user.myAddresses || [],
+      status: user.status,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    }));
+
+    return res.status(200).json({
+      message: 'All users retrieved successfully!',
+      users: formattedUsers
+    });
+
+  } catch (error) {
+    console.error('Get All Users Error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+
+export const getSingleUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found!" });
+    }
+
+    // Fetch orders for this user and populate nested fields
+    const orders = await Order.find({ userId: user._id })
+      .populate({
+        path: 'orderItems.medicineId',
+        populate: { path: 'pharmacyId', select: 'name' }
+      })
+      .populate('assignedRider');
+
+    // Format orders array
+    const formattedOrders = orders.map(order => ({
+      id: order._id,
+      deliveryAddress: order.deliveryAddress,
+      orderItems: order.orderItems.map(item => ({
+        id: item._id,
+        name: item.medicineId?.name || "N/A",
+        pharmacyName: item.medicineId?.pharmacyId?.name || "N/A",
+        quantity: item.quantity,
+        price: item.medicineId?.price || 0,
+        total: (item.medicineId?.price || 0) * (item.quantity || 1),
+      })),
+      statusTimeline: order.statusTimeline.map(status => ({
+        status: status.status,
+        message: status.message,
+        timestamp: status.timestamp,
+      })),
+      totalAmount: order.totalAmount,
+      notes: order.notes,
+      voiceNoteUrl: order.voiceNoteUrl,
+      paymentMethod: order.paymentMethod,
+      status: order.status,
+      assignedRider: order.assignedRider
+        ? {
+            id: order.assignedRider._id,
+            name: order.assignedRider.name,
+            phone: order.assignedRider.phone,
+            email: order.assignedRider.email,
+            location: order.assignedRider.location,  // assuming location field exists
+          }
+        : null,
+      assignedRiderStatus: order.assignedRiderStatus,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+    }));
+
+    // Format user data as before
+    const formattedUser = {
+      id: user._id,
+      name: user.name,
+      email: user.email || null,
+      mobile: user.mobile,
+      code: user.code || null,
+      status: user.status || null,
+      profileImage:
+        user.profileImage ||
+        "https://img.freepik.com/premium-vector/student-avatar-illustration-user-profile-icon-youth-avatar_118339-4406.jpg?w=2000",
+      location: user.location || { type: "Point", coordinates: [0, 0] },
+      addresses: user.myAddresses?.map(addr => ({
+        id: addr._id,
+        house: addr.house,
+        street: addr.street,
+        city: addr.city,
+        state: addr.state,
+        pincode: addr.pincode,
+        country: addr.country,
+      })) || [],
+      notifications: user.notifications?.map(note => ({
+        id: note._id,
+        orderId: note.orderId,
+        status: note.status,
+        message: note.message,
+        timestamp: note.timestamp,
+        read: note.read,
+      })) || [],
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      orders: formattedOrders,
+    };
+
+    return res.status(200).json({
+      message: "User details with orders retrieved successfully!",
+      user: formattedUser,
+    });
+  } catch (error) {
+    console.error("Get Single User Error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+export const updateUser = async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const updateData = req.body; // { status: "inactive" }
+
+    const updatedUser = await User.findByIdAndUpdate(userId, updateData, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: 'User not found!' });
+    }
+
+    return res.status(200).json({
+      message: 'User updated successfully!',
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error('Update User Error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+// Delete User by ID
+export const deleteUser = async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    // Find user and delete
+    const deletedUser = await User.findByIdAndDelete(userId);
+
+    if (!deletedUser) {
+      return res.status(404).json({ message: 'User not found!' });
+    }
+
+    return res.status(200).json({ message: 'User deleted successfully!' });
+  } catch (error) {
+    console.error('Delete User Error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+
+export const getAllOrders = async (req, res) => {
+  try {
+    // Fetch all orders, latest first
+    const orders = await Order.find()
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "userId",
+        select: "name mobile email profileImage"
+      })
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name price images description categoryName pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name location"
+        }
+      });
+
+    return res.status(200).json({
+      message: "All orders fetched successfully",
+      totalOrders: orders.length,
+      orders
+    });
+
+  } catch (error) {
+    console.error("Get All Orders Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+
+export const getSingleOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    // Validate MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order ID" });
+    }
+
+    // Find order by ID and populate user, medicines, pharmacy, and rider
+    const order = await Order.findById(orderId)
+      .populate({
+        path: "userId",
+        select: "name mobile email profileImage"
+      })
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name price images description categoryName pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name location"
+        }
+      })
+      .populate({
+        path: "assignedRider",
+        select: "name phone email latitude longitude profileImage"
+      });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    return res.status(200).json({
+      message: "Order fetched successfully",
+      order
+    });
+
+  } catch (error) {
+    console.error("Get Single Order Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+
+export const deleteOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    // Validate MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order ID" });
+    }
+
+    // Find and delete the order
+    const deletedOrder = await Order.findByIdAndDelete(orderId);
+
+    if (!deletedOrder) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    return res.status(200).json({
+      message: "Order deleted successfully",
+      deletedOrder
+    });
+
+  } catch (error) {
+    console.error("Delete Order Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+export const logoutAdmin = async (req, res) => {
+  try {
+    // If using sessions in future: req.session.destroy()
+    // If using tokens: you can blacklist the token (not needed here)
+
+    return res.status(200).json({ message: 'Logout successful' });
+  } catch (error) {
+    console.error('Logout Admin Error:', error);
+    return res.status(500).json({ message: 'Server error during logout' });
+  }
+};
+
+
+
+// 🔹 Update User Status by Admin
+export const updateUserStatus = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { status } = req.body; // active, inactive, suspended etc.
+
+    // check status field
+    if (!status) {
+      return res.status(400).json({
+        message: "Status field is required",
+      });
+    }
+
+    // update user
+    const updatedUser = await UserModel.findByIdAndUpdate(
+      userId,
+      { status },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    return res.status(200).json({
+      message: "User status updated successfully",
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("Error updating status:", error);
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// 📌 Get All Payments (from Orders)
+export const getAllPayments = async (req, res) => {
+  try {
+    // Fetch all orders where paymentMethod exists (means payment info available)
+    const payments = await Order.find(
+      { paymentMethod: { $exists: true, $ne: null } } // sirf unhi orders ko jo payment method ke sath hain
+    )
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "userId",
+        select: "name mobile email profileImage"
+      })
+      .select("userId totalAmount paymentMethod status createdAt updatedAt"); 
+      // sirf payment-related fields select kiye
+
+    return res.status(200).json({
+      message: "All payments fetched successfully",
+      totalPayments: payments.length,
+      payments
+    });
+
+  } catch (error) {
+    console.error("Get All Payments Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+export const createRider = async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      phone,
+      address,
+      city,
+      state,
+      pinCode,
+      latitude,
+      longitude,
+      deliveryCharge,
+      status = "online", // Default to online if not provided
+    } = req.body;
+
+    if (!name || !email || !phone || !address) {
+      return res.status(400).json({
+        message: "Name, email, phone, and address are required",
+      });
+    }
+
+    // Upload profile image
+    let profileImageUrl = "";
+    if (req.files?.profileImage) {
+      const uploaded = await cloudinary.uploader.upload(
+        req.files.profileImage.tempFilePath,
+        { folder: "riders/profile" }
+      );
+      profileImageUrl = uploaded.secure_url;
+    }
+
+    // Upload multiple ride images
+    let rideImageUrls = [];
+    if (req.files?.rideImages) {
+      const rideFiles = Array.isArray(req.files.rideImages)
+        ? req.files.rideImages
+        : [req.files.rideImages];
+
+      for (let file of rideFiles) {
+        const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: "riders/vehicles",
+        });
+        rideImageUrls.push(uploaded.secure_url);
+      }
+    }
+
+    // Generate random 4-digit password
+    const password = Math.floor(1000 + Math.random() * 9000).toString();
+
+    // Create Rider with status
+    const rider = new Rider({
+      name,
+      email,
+      phone,
+      address,
+      city,
+      state,
+      pinCode,
+      latitude: parseFloat(latitude),
+      longitude: parseFloat(longitude),
+      profileImage: profileImageUrl,
+      rideImages: rideImageUrls,
+      deliveryCharge: parseFloat(deliveryCharge) || 0,
+      password,
+      status, // Set status here (default online)
+    });
+
+    await rider.save();
+
+    return res.status(201).json({
+      message: "Rider created successfully",
+      rider,
+    });
+  } catch (error) {
+    console.error("Create Rider Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+export const updateRider = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const {
+      name,
+      email,
+      phone,
+      address,
+      city,
+      state,
+      pinCode,
+      latitude,
+      longitude,
+      deliveryCharge,
+      status, // New status field to update
+    } = req.body;
+
+    // Check if rider exists
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // Update fields
+    rider.name = name || rider.name;
+    rider.email = email || rider.email;
+    rider.phone = phone || rider.phone;
+    rider.address = address || rider.address;
+    rider.city = city || rider.city;
+    rider.state = state || rider.state;
+    rider.pinCode = pinCode || rider.pinCode;
+    rider.latitude = latitude ? parseFloat(latitude) : rider.latitude;
+    rider.longitude = longitude ? parseFloat(longitude) : rider.longitude;
+    rider.deliveryCharge = deliveryCharge ? parseFloat(deliveryCharge) : rider.deliveryCharge;
+
+    // Update status only if provided and valid
+    if (status && ["online", "offline"].includes(status)) {
+      rider.status = status;
+    }
+
+    // Handle profile image update
+    if (req.files?.profileImage) {
+      const uploadedProfileImage = await cloudinary.uploader.upload(req.files.profileImage.tempFilePath, {
+        folder: 'riders/profile',
+      });
+      rider.profileImage = uploadedProfileImage.secure_url;
+    }
+
+    // Handle ride images update
+    if (req.files?.rideImages) {
+      const rideFiles = Array.isArray(req.files.rideImages)
+        ? req.files.rideImages
+        : [req.files.rideImages];
+
+      let rideImageUrls = [];
+      for (let file of rideFiles) {
+        const uploadedRideImage = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: 'riders/vehicles',
+        });
+        rideImageUrls.push(uploadedRideImage.secure_url);
+      }
+      rider.rideImages = rideImageUrls;
+    }
+
+    // Save updated rider
+    await rider.save();
+
+    return res.status(200).json({
+      message: "Rider updated successfully",
+      rider,
+    });
+  } catch (error) {
+    console.error("Update Rider Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+export const deleteRider = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    // 🌟 Find and delete rider
+    const rider = await Rider.findByIdAndDelete(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    return res.status(200).json({
+      message: "Rider deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete Rider Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+
+
+
+export const getAllRiders = async (req, res) => {
+  try {
+    const riders = await Rider.find().sort({ createdAt: -1 });
+
+    const enrichedRiders = await Promise.all(
+      riders.map(async (rider) => {
+        const totalAssigned = await Order.countDocuments({ assignedRider: rider._id });
+        const totalCompleted = await Order.countDocuments({
+          assignedRider: rider._id,
+          assignedRiderStatus: "Completed"
+        });
+
+        return {
+          _id: rider._id,
+          name: rider.name,
+          email: rider.email,
+          phone: rider.phone,
+          password: rider.password,
+          wallet: rider.wallet || 0,
+          deliveryCharge: rider.deliveryCharge || 0,
+          totalOrdersAssigned: totalAssigned,
+          totalOrdersCompleted: totalCompleted,
+          profileImage: rider.profileImage,
+          rideImages: rider.rideImages,
+          address: rider.address,
+          city: rider.city,
+          state: rider.state,
+          pinCode: rider.pinCode,
+          status: rider.status,
+          drivingLicense: rider.drivingLicense,
+          accountDetails: rider.accountDetails || [],
+          createdAt: rider.createdAt,
+        };
+      })
+    );
+
+    res.status(200).json({
+      message: "All riders with order stats and bank details fetched successfully",
+      total: enrichedRiders.length,
+      riders: enrichedRiders,
+    });
+
+  } catch (error) {
+    console.error("Error in getAllRiders:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+// Create Ad
+export const createAd = async (req, res) => {
+  try {
+    const { title, link } = req.body;
+
+    if (!title || !link) {
+      return res.status(400).json({ message: "Title and link are required" });
+    }
+
+    let imageUrl = "";
+
+    // 📤 Upload image to Cloudinary
+    if (req.files?.image) {
+      const uploaded = await cloudinary.uploader.upload(
+        req.files.image.tempFilePath,
+        { folder: "ads" }
+      );
+      imageUrl = uploaded.secure_url;
+    } else if (req.body.image?.startsWith("http")) {
+      // agar frontend se direct URL aaya ho
+      imageUrl = req.body.image;
+    } else {
+      return res.status(400).json({ message: "Ad image is required" });
+    }
+
+    // 🛠️ Create Ad
+    const ad = new Ad({
+      title,
+      link,
+      image: imageUrl,
+    });
+
+    await ad.save();
+
+    return res.status(201).json({
+      message: "Ad created successfully",
+      ad,
+    });
+  } catch (error) {
+    console.error("Create Ad Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// Get All Ads
+export const getAllAds = async (req, res) => {
+  try {
+    const ads = await Ad.find().sort({ createdAt: -1 });
+    res.json({ message: "All ads fetched successfully", total: ads.length, ads });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+// Get Single Ad
+export const getAdById = async (req, res) => {
+  try {
+    const ad = await Ad.findById(req.params.id);
+    if (!ad) return res.status(404).json({ message: "Ad not found" });
+    res.json(ad);
+  } catch (error) {
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+// Update Ad
+export const updateAd = async (req, res) => {
+  try {
+    const { title, link, status } = req.body;
+    let updateData = { title, link, status };
+
+    if (req.file?.path) updateData.image = req.file.path;
+
+    const ad = await Ad.findByIdAndUpdate(req.params.id, updateData, { new: true });
+
+    if (!ad) return res.status(404).json({ message: "Ad not found" });
+
+    res.json({ message: "Ad updated successfully", ad });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+// Delete Ad
+export const deleteAd = async (req, res) => {
+  try {
+    const ad = await Ad.findByIdAndDelete(req.params.id);
+    if (!ad) return res.status(404).json({ message: "Ad not found" });
+    res.json({ message: "Ad deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+
+// ✅ Get all queries
+export const getAllQueries = async (req, res) => {
+  try {
+    const queries = await Query.find().sort({ createdAt: -1 });
+    res.status(200).json(queries);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching queries", error });
+  }
+};
+
+
+
+// ✅ Update query status
+export const updateQueryStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const query = await Query.findByIdAndUpdate(
+      id,
+      { status },
+      { new: true }
+    );
+
+    if (!query) {
+      return res.status(404).json({ message: "Query not found" });
+    }
+
+    res.status(200).json({ message: "Query status updated", query });
+  } catch (error) {
+    res.status(500).json({ message: "Error updating query", error });
+  }
+};
+
+// ✅ Delete query
+export const deleteQuery = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const query = await Query.findByIdAndDelete(id);
+
+    if (!query) {
+      return res.status(404).json({ message: "Query not found" });
+    }
+
+    res.status(200).json({ message: "Query deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error deleting query", error });
+  }
+};
+
+
+// ✅ Get All Prescriptions for Admin
+// 🌟 Get All Prescriptions (with user info populated)
+export const getAllPrescriptionsForAdmin = async (req, res) => {
+  try {
+    const prescriptions = await Prescription.find()
+      .populate("userId", "name email") // only include user's name & email
+      .sort({ createdAt: -1 }); // latest first
+
+    res.status(200).json({
+      count: prescriptions.length,
+      prescriptions,
+    });
+  } catch (error) {
+    console.error("Get All Prescriptions Error:", error);
+    res.status(500).json({
+      message: "Error fetching prescriptions",
+      error: error.message,
+    });
+  }
+};
+
+
+// ✅ Delete Prescription (Admin)
+export const deletePrescriptionForAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ message: "Prescription id is required in params" });
+    }
+
+    const deleted = await Prescription.findByIdAndDelete(id);
+
+    if (!deleted) {
+      return res.status(404).json({ message: "Prescription not found" });
+    }
+
+    res.status(200).json({
+      message: "Prescription deleted successfully",
+      prescription: deleted,
+    });
+  } catch (error) {
+    console.error("Delete Prescription Error:", error);
+    res.status(500).json({ message: "Error deleting prescription", error: error.message });
+  }
+};
+
+
+// GET all notifications
+export const getAllNotifications = async (req, res) => {
+  try {
+    const notifications = await Notification.find()
+      .sort({ createdAt: -1 });
+    return res.status(200).json(notifications);
+  } catch (error) {
+    console.error("Get Notifications Error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// DELETE a notification
+export const deleteNotification = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await Notification.findByIdAndDelete(id);
+    return res.status(200).json({ message: "Notification deleted successfully" });
+  } catch (error) {
+    console.error("Delete Notification Error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+// GET all delivered orders
+export const getDeliveredOrders = async (req, res) => {
+  try {
+    // Fetch all orders with status "Delivered"
+    const orders = await Order.find({ status: "Delivered" })
+      .populate("userId", "name mobile") // get user info
+      .populate("assignedRider", "name mobile vehicle") // get rider info
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({ orders });
+  } catch (error) {
+    console.error("Error fetching delivered orders:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+// GET all fully refunded orders
+export const getRefundOrders = async (req, res) => {
+  try {
+    const refundOrders = await Order.find({ status: "Refunded" })
+      .populate("userId", "name mobile") // populate user info
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({ refundOrders });
+  } catch (error) {
+    console.error("Error fetching refund orders:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const getDashboardData = async (req, res) => {
+  try {
+    // Fetch all data in parallel
+    const [users, pharmacies, orders, medicines, riders] = await Promise.all([
+      User.find().lean(),
+      Pharmacy.find().lean(),
+      Order.find().lean(),
+      Medicine.find().lean(),
+      Rider.find().lean(),
+    ]);
+
+    // === Date Helpers ===
+    const now = new Date();
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const daysAgo = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      return d;
+    };
+
+    const monthsAgo = (n) => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - n);
+      return d;
+    };
+
+    // Map medicineId to pharmacyId
+    const medicineToPharmacyMap = new Map();
+    medicines.forEach(med => {
+      medicineToPharmacyMap.set(med._id.toString(), med.pharmacyId.toString());
+    });
+
+    // Calculate revenue for each pharmacy
+    const pharmacyRevenueMap = new Map();
+
+    orders.forEach(order => {
+      if (!order.totalAmount || !order.orderItems || order.orderItems.length === 0) return;
+
+      // Calculate share of totalAmount per medicine in order (equal split)
+      const perMedicineRevenue = order.totalAmount / order.orderItems.length;
+
+      order.orderItems.forEach(item => {
+        const medId = item.medicineId?.toString();
+        if (!medId) return;
+
+        const pharmacyId = medicineToPharmacyMap.get(medId);
+        if (!pharmacyId) return;
+
+        const currentRevenue = pharmacyRevenueMap.get(pharmacyId) || 0;
+        pharmacyRevenueMap.set(pharmacyId, currentRevenue + perMedicineRevenue);
+      });
+    });
+
+    // Prepare topPharmacies array with revenue and orders count
+    const topPharmacies = pharmacies.map(ph => {
+      const revenue = pharmacyRevenueMap.get(ph._id.toString()) || 0;
+
+      // Count how many orders include medicines from this pharmacy
+      const ordersCount = orders.filter(order => {
+        return order.orderItems.some(item => {
+          const medId = item.medicineId?.toString();
+          return medicineToPharmacyMap.get(medId) === ph._id.toString();
+        });
+      }).length;
+
+      return {
+        name: ph.name,
+        revenue,
+        orders: ordersCount,
+      };
+    }).sort((a, b) => b.revenue - a.revenue);
+
+    // === Revenue Data Filters ===
+    const revenueData = [
+      {
+        label: "Today",
+        revenue: orders
+          .filter(o => o.createdAt && new Date(o.createdAt) >= startOfToday)
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+      },
+      {
+        label: "Last 7 Days",
+        revenue: orders
+          .filter(o => o.createdAt && new Date(o.createdAt) >= daysAgo(7))
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+      },
+      {
+        label: "Last 1 Month",
+        revenue: orders
+          .filter(o => o.createdAt && new Date(o.createdAt) >= monthsAgo(1))
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+      },
+      {
+        label: "Last 6 Months",
+        revenue: orders
+          .filter(o => o.createdAt && new Date(o.createdAt) >= monthsAgo(6))
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+      },
+      {
+        label: "Last 12 Months",
+        revenue: orders
+          .filter(o => o.createdAt && new Date(o.createdAt) >= monthsAgo(12))
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+      },
+    ];
+
+    // === User Orders Summary ===
+    const userOrdersMap = new Map();
+    orders.forEach(order => {
+      const userId = order.userId?.toString();
+      if (!userId) return;
+      if (!userOrdersMap.has(userId)) userOrdersMap.set(userId, []);
+      userOrdersMap.get(userId).push(order);
+    });
+
+    const userOrdersSummary = users.map(user => {
+      const userId = user._id.toString();
+      const userOrders = userOrdersMap.get(userId) || [];
+
+      const totalOrders = userOrders.length;
+
+      // Total medicines ordered across all user orders
+      const medicinesOrdered = userOrders.reduce((sum, order) => {
+        return sum + (order.orderItems ? order.orderItems.length : 0);
+      }, 0);
+
+      // Last order date
+      const lastOrderDate = userOrders.reduce((latest, order) => {
+        const orderDate = order.createdAt ? new Date(order.createdAt) : null;
+        return orderDate && (!latest || orderDate > latest) ? orderDate : latest;
+      }, null);
+
+      // Count orders by status
+      let onTimeCount = 0;
+      let delayedCount = 0;
+      let cancelledCount = 0;
+
+      userOrders.forEach(order => {
+        if (order.status === "cancelled") {
+          cancelledCount++;
+        } else if (order.status === "delivered") {
+          if (order.isDelayed) delayedCount++;
+          else onTimeCount++;
+        }
+      });
+
+      return {
+        user: user.name || user.email || "Unknown",
+        lastOrder: lastOrderDate ? lastOrderDate.toISOString().split('T')[0] : "No Orders",
+        accountCreated: user.createdAt ? new Date(user.createdAt).toISOString().split('T')[0] : "Unknown",
+        totalOrders,
+        medicinesOrdered,
+        onTime: onTimeCount,
+        delayed: delayedCount,
+        cancelled: cancelledCount,
+      };
+    });
+
+    // === Pharmacy Insights ===
+    const pharmacyInsights = pharmacies.map(ph => {
+      const pharmacyIdStr = ph._id.toString();
+
+      // Total Orders including this pharmacy's medicines
+      const totalOrders = orders.filter(order => {
+        return order.orderItems.some(item => {
+          const medId = item.medicineId?.toString();
+          return medicineToPharmacyMap.get(medId) === pharmacyIdStr;
+        });
+      }).length;
+
+      // Average Rating (assuming ph.ratings is an array of numbers)
+      let avgRating = 0;
+      if (ph.ratings && ph.ratings.length > 0) {
+        const sumRatings = ph.ratings.reduce((acc, val) => acc + val, 0);
+        avgRating = sumRatings / ph.ratings.length;
+      } else if (typeof ph.rating === "number") {
+        avgRating = ph.rating;  // if single rating number available
+      }
+
+      // Medicines Available
+      const medicinesAvailable = medicines.filter(med => med.pharmacyId.toString() === pharmacyIdStr).length;
+
+      // Joined Date (formatted YYYY-MM-DD)
+      const joinedDate = ph.createdAt ? new Date(ph.createdAt).toISOString().split('T')[0] : "Unknown";
+
+      return {
+        pharmacy: ph.name,
+        totalOrders,
+        avgRating: Number(avgRating.toFixed(2)), // round to 2 decimals
+        medicinesAvailable,
+        joinedDate,
+      };
+    });
+
+    // === Count Online Riders ===
+    const onlineRidersCount = riders.filter(rider => rider.status === "online").length;
+
+    // === Final Response ===
+    res.json({
+      stats: {
+        totalUsers: users.length,
+        totalOrders: orders.length,
+        totalPharmacies: pharmacies.length,
+        totalMedicines: medicines.length,
+        totalRiders: riders.length,
+        onlineRiders: onlineRidersCount,  // Added online riders count
+      },
+      revenueData,
+      topPharmacies,
+      userOrdersSummary,
+      pharmacyInsights,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      message: "Failed to fetch dashboard data",
+      error: error.message,
+    });
+  }
+};
+
+// ✅ Create Banner Controller
+export const createBanner = async (req, res) => {
+  try {
+    // 🌟 Multiple images upload
+    let bannerImageUrls = [];
+
+    if (req.files?.images) {
+      const bannerFiles = Array.isArray(req.files.images)
+        ? req.files.images
+        : [req.files.images];
+
+      for (let file of bannerFiles) {
+        const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: "banners",
+        });
+        bannerImageUrls.push(uploaded.secure_url);
+      }
+    }
+
+    if (bannerImageUrls.length === 0) {
+      return res.status(400).json({ message: "At least one image is required" });
+    }
+
+    // 🛠️ Save banner in DB
+    const banner = new Banner({
+      images: bannerImageUrls,
+    });
+
+    await banner.save();
+
+    return res.status(201).json({
+      message: "Banner created successfully 🎉",
+      banner,
+    });
+  } catch (error) {
+    console.error("Create Banner Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// ✅ Get All Banners
+export const getAllBanners = async (req, res) => {
+  try {
+    const banners = await Banner.find().sort({ createdAt: -1 });
+    return res.status(200).json({
+      message: "Banners fetched successfully",
+      banners,
+    });
+  } catch (error) {
+    console.error("Get All Banners Error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// ✅ Update Banner (replace images)
+export const updateBanner = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const banner = await Banner.findById(id);
+    if (!banner) {
+      return res.status(404).json({ message: "Banner not found" });
+    }
+
+    let bannerImageUrls = banner.images; // old images
+
+    if (req.files?.images) {
+      const bannerFiles = Array.isArray(req.files.images)
+        ? req.files.images
+        : [req.files.images];
+
+      bannerImageUrls = [];
+      for (let file of bannerFiles) {
+        const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: "banners",
+        });
+        bannerImageUrls.push(uploaded.secure_url);
+      }
+    }
+
+    banner.images = bannerImageUrls;
+    await banner.save();
+
+    return res.status(200).json({
+      message: "Banner updated successfully ✨",
+      banner,
+    });
+  } catch (error) {
+    console.error("Update Banner Error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// ✅ Delete Banner
+export const deleteBanner = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const banner = await Banner.findById(id);
+    if (!banner) {
+      return res.status(404).json({ message: "Banner not found" });
+    }
+
+    await Banner.findByIdAndDelete(id);
+
+    return res.status(200).json({ message: "Banner deleted successfully ❌" });
+  } catch (error) {
+    console.error("Delete Banner Error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const acceptWithdrawalRequest = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { status } = req.body; // <- 👈 Taking status from body
+
+    if (!mongoose.Types.ObjectId.isValid(requestId)) {
+      return res.status(400).json({ message: "Invalid requestId" });
+    }
+
+    const request = await withdrawalRequestModel.findById(requestId);
+    if (!request) {
+      return res.status(404).json({ message: "Withdrawal request not found" });
+    }
+
+    const rider = await Rider.findById(request.riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // If the new status is "Accepted", deduct wallet
+    if (status === "Approved") {
+      if (request.status !== "Requested") {
+        return res.status(400).json({ message: "Only 'Requested' withdrawals can be accepted" });
+      }
+
+      if (request.amount > rider.wallet) {
+        return res.status(400).json({ message: "Insufficient wallet balance" });
+      }
+
+      rider.wallet -= request.amount;
+      await rider.save();
+    }
+
+    // Update withdrawal request status
+    request.status = status;
+    request.updatedAt = new Date();
+    await request.save();
+
+    return res.status(200).json({
+      message: `Withdrawal request ${status.toLowerCase()} successfully`,
+      remainingWallet: `₹${rider.wallet.toFixed(2)}`,
+    });
+
+  } catch (error) {
+    console.error("Error updating withdrawal request:", error);
+    return res.status(500).json({ message: "Server error while updating withdrawal request" });
+  }
+};
+
+
+export const getAllWithdrawalRequestsController = async (req, res) => {
+  try {
+    const requests = await withdrawalRequestModel
+      .find()
+      .sort({ createdAt: -1 })
+      .populate('riderId', 'name email phone profileImage city state'); // populate with specific fields
+
+    if (!requests || requests.length === 0) {
+      return res.status(404).json({ message: "No withdrawal requests found" });
+    }
+
+    return res.status(200).json({
+      message: "Withdrawal requests retrieved successfully",
+      requests,
+    });
+  } catch (error) {
+    console.error("Error fetching withdrawal requests:", error);
+    return res.status(500).json({ message: "Server error while fetching withdrawal requests" });
+  }
+};
+
+
+export const deleteWithdrawalRequest = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(requestId)) {
+      return res.status(400).json({ message: "Invalid requestId" });
+    }
+
+    // Check if request exists
+    const request = await withdrawalRequestModel.findById(requestId);
+    if (!request) {
+      return res.status(404).json({ message: "Withdrawal request not found" });
+    }
+
+    // Delete the request
+    await withdrawalRequestModel.findByIdAndDelete(requestId);
+
+    return res.status(200).json({ message: "Withdrawal request deleted successfully" });
+
+  } catch (error) {
+    console.error("Error deleting withdrawal request:", error);
+    return res.status(500).json({ message: "Server error while deleting withdrawal request" });
+  }
+};
+
+
+
+export const sendMessage = async (req, res) => {
+  const { vendorId, vendorIds, message } = req.body;   // Body se vendorId aur vendorIds lena
+
+  if (!message || message.trim() === "") {
+    return res.status(400).json({ error: "Message is required" });
+  }
+
+  try {
+    if (vendorIds && Array.isArray(vendorIds)) {
+      // Multiple vendors ko message bhejna
+      console.log(`Sending message to vendors: ${vendorIds.join(', ')}`);
+      console.log(`Message: ${message}`);
+
+      // Save the message to the database
+      const newMessage = new Message({
+        vendorIds: vendorIds,
+        message: message
+      });
+
+      await newMessage.save();  // Save message in DB
+
+      // TODO: SMS/Email sending logic here
+
+      return res.status(200).json({ success: true, message: `Message sent to ${vendorIds.length} vendors` });
+
+    } else if (vendorId) {
+      // Single vendor ko message bhejna
+      const vendor = await Pharmacy.findById(vendorId);  // **Pharmacy** model me `vendorId` se check karenge
+      if (!vendor) {
+        return res.status(404).json({ error: "Vendor (Pharmacy) not found" });
+      }
+
+      console.log(`Sending message to ${vendor.name}`);
+      console.log(`Message: ${message}`);
+
+      // Save the message to the database
+      const newMessage = new Message({
+        vendorIds: [vendorId],  // Single vendorId
+        message: message
+      });
+
+      await newMessage.save();  // Save message in DB
+
+      // TODO: SMS/Email sending logic here
+
+      return res.status(200).json({ success: true, message: `Message sent to ${vendor.name}` });
+    }
+
+    return res.status(400).json({ error: "No vendorId or vendorIds provided" });
+  } catch (error) {
+    console.error("Error in sendMessage controller:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+
+
+
+// Get all messages (optionally you can filter by vendorId if needed)
+export const getAllMessages = async (req, res) => {
+  try {
+    const messages = await Message.find().sort({ createdAt: -1 }); // latest first
+    return res.status(200).json(messages);
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// Delete a message by ID
+export const deleteMessage = async (req, res) => {
+  const { id } = req.params; // assuming message ID comes from URL params
+
+  try {
+    const deleted = await Message.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+    return res.status(200).json({ success: true, message: "Message deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting message:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+
+
+export const getAllRiderQueries = async (req, res) => {
+  try {
+    // Get all queries where riderId is present (i.e., not null or undefined)
+    const queries = await Query.find({ riderId: { $ne: null } }) // Filters out queries without a riderId
+      .populate('riderId', 'name mobile email');  // Populate rider info if needed
+
+    if (queries.length === 0) {
+      return res.status(404).json({ message: 'No rider queries found with a valid riderId' });
+    }
+
+    // Send success response with only relevant queries
+    res.status(200).json({ message: 'Rider queries fetched successfully', queries });
+  } catch (error) {
+    console.error('Error fetching rider queries:', error);
+    res.status(500).json({ message: 'Error fetching rider queries', error });
+  }
+};
+
+
+
+export const updateRiderQuery = async (req, res) => {
+  try {
+    const { queryId } = req.params; // Query ID in params
+    const { status, message } = req.body; // Optional fields to update
+
+    // Validate the queryId
+    const query = await Query.findById(queryId);
+    if (!query) {
+      return res.status(404).json({ message: "Query not found" });
+    }
+
+    // Update the query
+    if (status) {
+      query.status = status;
+    }
+    if (message) {
+      query.message = message;
+    }
+
+    // Save the updated query
+    await query.save();
+
+    // Send success response
+    res.status(200).json({ message: "Query updated successfully", query });
+  } catch (error) {
+    console.error("Error updating rider query:", error);
+    res.status(500).json({ message: "Error updating rider query", error });
+  }
+};
+
+
+
+export const deleteRiderQuery = async (req, res) => {
+  try {
+    const { queryId } = req.params; // Query ID in params
+
+    // Find the query by ID and delete it
+    const query = await Query.findByIdAndDelete(queryId);
+    if (!query) {
+      return res.status(404).json({ message: "Query not found" });
+    }
+
+    // Send success response
+    res.status(200).json({ message: "Query deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting rider query:", error);
+    res.status(500).json({ message: "Error deleting rider query", error });
+  }
+};
+

@@ -1,0 +1,1663 @@
+
+import Order from "../Models/Order.js";
+import Rider from "../Models/Rider.js";
+import mongoose from "mongoose";
+import moment from 'moment'; // Optional, but helpful
+import withdrawalRequestModel from "../Models/withdrawalRequestModel.js";
+import cloudinary from '../config/cloudinary.js';
+import Query from "../Models/Query.js";
+
+
+
+
+// Rider Signup with Driving License Upload
+export const signupRider = async (req, res) => {
+  try {
+    const { name, email, phone, password } = req.body;
+
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    // ✅ Check if phone already registered
+    const existingRider = await Rider.findOne({ phone });
+    if (existingRider) {
+      return res.status(400).json({ message: "Phone already registered" });
+    }
+
+    let drivingLicenseUrl = "";
+
+    // 📂 Case 1: File uploaded
+    if (req.files && req.files.drivingLicense) {
+      const file = req.files.drivingLicense;
+      const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+        folder: "rider_licenses",
+      });
+      drivingLicenseUrl = uploaded.secure_url;
+    }
+    // 🌐 Case 2: URL passed directly
+    else if (req.body.drivingLicense && req.body.drivingLicense.startsWith("http")) {
+      drivingLicenseUrl = req.body.drivingLicense;
+    } else {
+      return res.status(400).json({ message: "Driving license is required (upload or URL)" });
+    }
+
+    // 🆕 Create new rider
+    const newRider = new Rider({
+      name,
+      email,
+      phone,
+      password,
+      drivingLicense: drivingLicenseUrl,
+    });
+
+    await newRider.save();
+
+    res.status(201).json({
+      message: "Rider registered successfully",
+      rider: newRider,
+    });
+  } catch (error) {
+    console.error("🔥 Signup Rider Error:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+export const loginRider = async (req, res) => {
+  try {
+    const { phone, password } = req.body;
+
+    if (!phone || !password) {
+      return res.status(400).json({ message: "Phone and password are required" });
+    }
+
+    // Find rider and select the password
+    const rider = await Rider.findOne({ phone }).select("+password");
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // Simple password match
+    if (String(password).trim() !== String(rider.password).trim()) {
+      return res.status(401).json({ message: "Incorrect password" });
+    }
+
+    // Remove password from response
+    const { password: _, ...riderData } = rider.toObject();
+
+    return res.status(200).json({
+      message: "Login successful",
+      rider: riderData,
+    });
+  } catch (error) {
+    console.error("Login Rider Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+export const getRiderProfile = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    if (!riderId) {
+      return res.status(400).json({ message: "Rider ID is required" });
+    }
+
+    // 🧠 Get rider by ID (include password if needed, or exclude)
+    const rider = await Rider.findById(riderId).select('-password'); // hiding password for safety
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    return res.status(200).json({
+      message: "Rider profile fetched successfully",
+      rider,
+    });
+  } catch (error) {
+    console.error("🔥 Get Rider Profile Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+// ✅ Forgot Password (by email) without bcrypt
+export const forgotPassword = async (req, res) => {
+  try {
+    const { email, newPassword, confirmPassword } = req.body;
+
+    if (!email || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        message: "Email, new password and confirm password are required",
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ message: "Passwords do not match" });
+    }
+
+    const user = await Rider.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: "User not found with this email" });
+    }
+
+    // ⚠️ Save password directly (NOT recommended in production)
+    user.password = newPassword;
+    await user.save();
+
+    res.status(200).json({ message: "Password reset successfully" });
+  } catch (error) {
+    console.error("Error in forgotPassword:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const updateRiderProfileImage = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    // ✅ Check if file exists
+    if (!req.files?.profileImage) {
+      return res.status(400).json({ message: "Profile image file is required" });
+    }
+
+    // ✅ Find rider
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // 🌟 Upload new profile image to Cloudinary
+    const uploaded = await cloudinary.uploader.upload(
+      req.files.profileImage.tempFilePath,
+      { folder: "riders/profile" }
+    );
+
+    // 🛠️ Update profileImage field
+    rider.profileImage = uploaded.secure_url;
+    await rider.save();
+
+    return res.status(200).json({
+      message: "Profile image updated successfully",
+      rider,
+    });
+  } catch (error) {
+    console.error("Update Profile Image Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+
+
+export const getRiderOrderStats = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { filter = 'thisWeek' } = req.query;
+
+    if (!riderId) {
+      return res.status(400).json({ message: "Rider ID is required" });
+    }
+
+    // 📅 Generate date range based on filter
+    let startDate = new Date();
+    let endDate = new Date();
+
+    switch (filter) {
+      case 'today':
+        startDate.setHours(0, 0, 0, 0);
+        endDate.setHours(23, 59, 59, 999);
+        break;
+
+      case 'thisWeek':
+        const today = new Date();
+        const dayOfWeek = today.getDay(); // 0 = Sun, 1 = Mon ...
+        const diffToMonday = (dayOfWeek + 6) % 7; // convert to Mon-based
+        startDate.setDate(today.getDate() - diffToMonday);
+        startDate.setHours(0, 0, 0, 0);
+        endDate = new Date();
+        endDate.setHours(23, 59, 59, 999);
+        break;
+
+      case 'lastMonth':
+        const now = new Date();
+        startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+        break;
+
+      default:
+        const d = new Date();
+        const dow = d.getDay();
+        const diff = (dow + 6) % 7;
+        startDate.setDate(d.getDate() - diff);
+        startDate.setHours(0, 0, 0, 0);
+        endDate = new Date();
+        endDate.setHours(23, 59, 59, 999);
+    }
+
+    // 🔍 Get ALL orders in date range (not just completed)
+    const allOrders = await Order.find({
+      assignedRider: riderId,
+      createdAt: { $gte: startDate, $lte: endDate }
+    }).populate('assignedRider', 'deliveryCharge');
+
+    const pendingCount = allOrders.filter(o => o.status === 'Pending').length;
+    const cancelledCount = allOrders.filter(o => o.status === 'Cancelled').length;
+    const completedOrders = allOrders.filter(o => ['Completed', 'Delivered'].includes(o.status));
+    const completedCount = completedOrders.length;
+    const totalToday = allOrders.length;
+
+    // 🧮 Earnings per day
+    const earningsPerDay = {
+      Mon: 0, Tue: 0, Wed: 0, Thu: 0,
+      Fri: 0, Sat: 0, Sun: 0,
+    };
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    for (const order of completedOrders) {
+      const dayIndex = new Date(order.createdAt).getDay();
+      const dayName = days[dayIndex];
+      const riderCharge = order?.assignedRider?.deliveryCharge || 0;
+      earningsPerDay[dayName] += riderCharge;
+    }
+
+    const totalEarnings = completedOrders.reduce(
+      (sum, o) => sum + (o?.assignedRider?.deliveryCharge || 0),
+      0
+    );
+
+    // ✅ Final Response
+    return res.status(200).json({
+      message: "Rider stats fetched successfully",
+      filterUsed: filter,
+      orders: {
+        todayOrders: totalToday,
+        pending: pendingCount,
+        cancelled: cancelledCount,
+        completed: completedCount,
+      },
+      earnings: {
+        totalEarnings,
+        earningsPerDay
+      }
+    });
+
+  } catch (error) {
+    console.error("Get Rider Order Stats Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+// Utility function to calculate distance (in kilometers) between two coordinates using Haversine formula
+const calculateDistance = (coord1, coord2) => {
+  const toRad = (value) => (value * Math.PI) / 180;
+  const [lon1, lat1] = coord1;
+  const [lon2, lat2] = coord2;
+
+  const R = 6371; // km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; // Distance in km
+};
+
+// Calculate estimated time based on distance and average speed
+const calculateTime = (distance) => {
+  const speed = 30; // Speed in km/h, assuming a rider's average speed
+  const timeInHours = distance / speed; // Time in hours
+  const timeInMinutes = Math.round(timeInHours * 60); // Convert time to minutes
+  return timeInMinutes;
+};
+
+// Add time to a given timestamp (order creation time)
+const addMinutesToTime = (time, minutesToAdd) => {
+  const newTime = new Date(time);
+  newTime.setMinutes(newTime.getMinutes() + minutesToAdd);
+  return newTime;
+};
+
+// Format a date into 12-hour format (AM/PM)
+const formatTimeTo12Hour = (date) => {
+  let hours = date.getHours();
+  let minutes = date.getMinutes();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12; // Convert 24-hour to 12-hour format
+  hours = hours ? hours : 12; // '0' becomes 12
+  minutes = minutes < 10 ? '0' + minutes : minutes; // Add leading zero if needed
+  return `${hours}:${minutes} ${ampm}`;
+};
+
+// Controller to get new orders for the rider
+export const getNewOrdersForRiderController = async (req, res) => {
+  try {
+    const { riderId } = req.params;  // Rider ID will be passed through params
+
+    // Validate riderId
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    // Fetch all orders for the rider where assignedRiderStatus is "Assigned"
+    const newOrders = await Order.find({ 
+      assignedRider: riderId, 
+      assignedRiderStatus: 'Assigned' 
+    }).populate({
+      path: 'orderItems.medicineId', // Populate medicineId
+      select: 'name mrp description images pharmacyId',  // Select necessary fields
+      populate: {
+        path: 'pharmacyId', // Populate pharmacyId inside medicine
+        select: 'name address contactNumber latitude longitude' // Select pharmacy details
+      }
+    }).populate({
+      path: 'userId',
+      select: 'name mobile location'
+    }).lean(); // Make sure it's a plain object to manipulate
+
+    if (!newOrders || newOrders.length === 0) {
+      return res.status(404).json({ message: 'No new orders assigned to you' });
+    }
+
+    // Fetch rider's location details
+    const rider = await Rider.findById(riderId); // Fetch rider details with location
+    const riderLat = parseFloat(rider.latitude);
+    const riderLon = parseFloat(rider.longitude);
+    const deliveryCharge = parseFloat(rider.deliveryCharge) || 0;
+
+    // Add pickup time, drop time, and delivery charge to each order
+    const updatedOrders = newOrders.map(order => {
+      const pharmacy = order.orderItems[0].medicineId.pharmacyId;
+      const userLocation = order.userId.location?.coordinates;
+
+      if (!pharmacy || !userLocation) {
+        return null;  // Skip orders with missing pharmacy or user location
+      }
+
+      // Calculate distance between rider and pharmacy (pickup)
+      const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacy.longitude, pharmacy.latitude]);
+
+      // Calculate distance between pharmacy and user (drop)
+      const dropDistance = calculateDistance([pharmacy.longitude, pharmacy.latitude], [userLocation[0], userLocation[1]]);
+
+      // Calculate estimated times in minutes for pickup and drop
+      const pickupTime = calculateTime(pickupDistance); // Time in minutes for pickup
+      const dropTime = calculateTime(dropDistance); // Time in minutes for drop
+
+      // Add pickup and drop times to the order creation time
+      const pickupTimeEstimate = addMinutesToTime(order.createdAt, pickupTime);
+      const dropTimeEstimate = addMinutesToTime(order.createdAt, pickupTime + dropTime);
+
+      // Format the estimated times into 12-hour format (AM/PM)
+      const formattedPickupTime = formatTimeTo12Hour(pickupTimeEstimate);
+      const formattedDropTime = formatTimeTo12Hour(dropTimeEstimate);
+
+      // Billing calculations
+      const totalItems = order.orderItems.length;
+      let subTotal = 0;
+
+      order.orderItems.forEach(item => {
+        const mrp = item?.medicineId?.mrp || 0;
+        const quantity = item?.quantity || 1;
+        subTotal += mrp * quantity;
+      });
+
+      const platformFee = 10; // Static
+      const estimatedEarning = deliveryCharge;
+      const totalPaid = subTotal + platformFee + deliveryCharge;
+
+      return {
+        order,
+        pickupDistance: `${pickupDistance.toFixed(2)} km`,
+        dropDistance: `${dropDistance.toFixed(2)} km`,
+        pickupTime: formattedPickupTime,
+        dropTime: formattedDropTime,
+        estimatedEarning: `₹${estimatedEarning.toFixed(2)}`,
+        billingDetails: {
+          totalItems,
+          subTotal: `₹${subTotal.toFixed(2)}`,
+          platformFee: `₹${platformFee.toFixed(2)}`,
+          deliveryCharge: `₹${deliveryCharge.toFixed(2)}`,
+          totalPaid: `₹${totalPaid.toFixed(2)}`
+        }
+      };
+    }).filter(order => order !== null); // Remove any null entries (orders with missing data)
+
+    return res.status(200).json({ newOrders: updatedOrders });
+  } catch (error) {
+    console.error("Error fetching new orders for rider:", error);
+    return res.status(500).json({ message: "Server error while fetching new orders." });
+  }
+};
+
+
+
+
+export const getAcceptedOrdersForRiderController = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    // Validate riderId
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    // Fetch accepted orders
+    const acceptedOrders = await Order.find({
+      assignedRider: riderId,
+      assignedRiderStatus: 'Accepted'
+    })
+      .populate({
+        path: 'orderItems.medicineId',
+        select: 'name mrp description images pharmacyId', // Select the necessary fields
+        populate: {
+          path: 'pharmacyId',
+          select: 'name address contactNumber latitude longitude' // Populate pharmacyId fields
+        }
+      })
+      .populate({
+        path: 'userId',
+        select: 'name mobile location' // Select user fields
+      })
+      .lean();
+
+    if (!acceptedOrders || acceptedOrders.length === 0) {
+      return res.status(404).json({ message: 'No accepted orders for you yet.' });
+    }
+
+    // Fetch rider details
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    const riderLat = parseFloat(rider.latitude);
+    const riderLon = parseFloat(rider.longitude);
+
+    // Process each accepted order
+    const updatedOrders = acceptedOrders.map(order => {
+      const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
+      const userLocation = order.userId?.location?.coordinates;
+
+      const pharmacyLat = parseFloat(pharmacy?.latitude);
+      const pharmacyLon = parseFloat(pharmacy?.longitude);
+      const userLat = userLocation?.[1];
+      const userLon = userLocation?.[0];
+
+      // Calculate distances
+      const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacyLon, pharmacyLat]);
+      const dropDistance = calculateDistance([pharmacyLon, pharmacyLat], [userLon, userLat]);
+
+      // Time estimates
+      const pickupMinutes = calculateTime(pickupDistance);
+      const dropMinutes = calculateTime(dropDistance);
+
+      const pickupTimeEstimate = addMinutesToTime(order.createdAt, pickupMinutes);
+      const dropTimeEstimate = addMinutesToTime(order.createdAt, pickupMinutes + dropMinutes);
+
+      const formattedPickupTime = formatTimeTo12Hour(pickupTimeEstimate);
+      const formattedDropTime = formatTimeTo12Hour(dropTimeEstimate);
+
+      // Add all the necessary data to the order response
+      return {
+        order,
+        formattedPickupDistance: pickupDistance.toFixed(2),
+        formattedDropDistance: dropDistance.toFixed(2),
+        pickupTime: formattedPickupTime,
+        dropTime: formattedDropTime
+      };
+    });
+
+    return res.status(200).json({ acceptedOrders: updatedOrders });
+  } catch (error) {
+    console.error("Error fetching accepted orders for rider:", error);
+    return res.status(500).json({ message: "Server error while fetching accepted orders." });
+  }
+};
+
+
+
+
+export const getPickedUpOrdersForRiderController = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    const pickedUpOrders = await Order.find({
+      assignedRider: riderId,
+      assignedRiderStatus: "PickedUp",
+    })
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name mrp description images pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name address contactNumber latitude longitude",
+        },
+      })
+      .populate({
+        path: "userId",
+        select: "name mobile location",
+      })
+      .lean();
+
+    if (!pickedUpOrders || pickedUpOrders.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "No picked up orders for you yet." });
+    }
+
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    const updatedOrders = pickedUpOrders.map((order) => {
+      const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
+      const userLocation = order.userId?.location?.coordinates;
+
+      const pharmacyLat = parseFloat(pharmacy?.latitude);
+      const pharmacyLon = parseFloat(pharmacy?.longitude);
+      const userLat = userLocation?.[1];
+      const userLon = userLocation?.[0];
+
+      const dropDistance = calculateDistance(
+        [pharmacyLon, pharmacyLat],
+        [userLon, userLat]
+      );
+
+      const dropMinutes = calculateTime(dropDistance);
+      const dropTimeEstimate = addMinutesToTime(order.createdAt, dropMinutes);
+      const formattedDropTime = formatTimeTo12Hour(dropTimeEstimate);
+
+      const totalItems = order.orderItems.length;
+      let subTotal = 0;
+
+      order.orderItems.forEach((item) => {
+        const mrp = item?.medicineId?.mrp || 0;
+        const quantity = item?.quantity || 1;
+        subTotal += mrp * quantity;
+      });
+
+      const platformFee = 10;
+      const deliveryCharge = parseFloat(rider.deliveryCharge) || 0;
+      const totalPaid = subTotal + platformFee + deliveryCharge;
+
+      return {
+        order,
+        formattedDropDistance: dropDistance.toFixed(2),
+        dropTime: formattedDropTime,
+        billingDetails: {
+          totalItems,
+          subTotal: `₹${subTotal.toFixed(2)}`,
+          platformFee: `₹${platformFee.toFixed(2)}`,
+          deliveryCharge: `₹${deliveryCharge.toFixed(2)}`,
+          totalPaid: `₹${totalPaid.toFixed(2)}`,
+        },
+        // ✅ UPI ID sirf Cash on Delivery wale orders ke liye bhejna
+        upiId: order.paymentMethod === "Cash on Delivery" ? (rider.upiId || "juleeperween@ybl") : null,
+      };
+    });
+
+    return res.status(200).json({ pickedUpOrders: updatedOrders });
+  } catch (error) {
+    console.error("Error fetching picked up orders for rider:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error while fetching picked up orders." });
+  }
+};
+
+
+
+
+
+// Controller to update assignedRiderStatus for the rider
+export const updateRiderStatusController = async (req, res) => {
+  try {
+    const { riderId } = req.params;  // Rider ID passed through params
+    const { orderId, newStatus } = req.body;   // Order ID and newStatus from the request body
+
+    // Find the order
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    // Check if the rider is the assigned one
+    if (!order.assignedRider || order.assignedRider.toString() !== riderId) {
+      return res.status(403).json({ message: 'This order is not assigned to you' });
+    }
+
+    // Update assigned rider status
+    order.assignedRiderStatus = newStatus;
+
+    // Push to statusTimeline
+    order.statusTimeline.push({
+      status: newStatus,
+      message: `Rider updated status to ${newStatus}`,
+      timestamp: new Date(),
+    });
+
+    // Save the updated order
+    await order.save();
+
+    return res.status(200).json({ message: `Order status updated to ${newStatus}` });
+  } catch (error) {
+    console.error("Error updating rider status:", error);
+    return res.status(500).json({ message: 'Server error while updating rider status' });
+  }
+};
+
+
+
+export const getSingleOrderForRiderController = async (req, res) => {
+  try {
+    const { riderId, orderId } = req.params;
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid rider ID or order ID" });
+    }
+
+    // Fetch order
+    const order = await Order.findOne({
+      _id: orderId,
+      assignedRider: riderId,
+    })
+      .populate({
+        path: 'orderItems.medicineId',
+        select: 'name mrp description images pharmacyId',  // Add more fields as needed
+        populate: {
+          path: 'pharmacyId',
+          select: 'name address contactNumber latitude longitude' // Full pharmacy details
+        }
+      })
+      .populate({
+        path: 'userId',
+        select: 'name mobile location'
+      })
+      .lean();
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found or not assigned to rider' });
+    }
+
+    // Fetch rider
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    const riderLat = parseFloat(rider.latitude);
+    const riderLon = parseFloat(rider.longitude);
+    const deliveryCharge = parseFloat(rider.deliveryCharge) || 0;
+
+    const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
+    const userLocation = order.userId?.location?.coordinates;
+
+    if (!pharmacy || !userLocation) {
+      return res.status(400).json({ message: "Invalid pharmacy or user location" });
+    }
+
+    // Distance calculations
+    const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacy.longitude, pharmacy.latitude]);
+    const dropDistance = calculateDistance([pharmacy.longitude, pharmacy.latitude], [userLocation[0], userLocation[1]]);
+
+    // Time estimations
+    const pickupMinutes = calculateTime(pickupDistance);
+    const dropMinutes = calculateTime(dropDistance);
+    const pickupTime = addMinutesToTime(order.createdAt, pickupMinutes);
+    const dropTime = addMinutesToTime(order.createdAt, pickupMinutes + dropMinutes);
+    const formattedPickupTime = formatTimeTo12Hour(pickupTime);
+    const formattedDropTime = formatTimeTo12Hour(dropTime);
+
+    // Billing calculations
+    const totalItems = order.orderItems.length;
+    let subTotal = 0;
+
+    order.orderItems.forEach(item => {
+      const mrp = item?.medicineId?.mrp || 0;
+      const quantity = item?.quantity || 1;
+      subTotal += mrp * quantity;
+    });
+
+    const platformFee = 10; // Static
+    const estimatedEarning = deliveryCharge;
+    const totalPaid = subTotal + platformFee + deliveryCharge;
+
+    return res.status(200).json({
+      order,
+      pickupDistance: `${pickupDistance.toFixed(2)} km`,
+      dropDistance: `${dropDistance.toFixed(2)} km`,
+      pickupTime: formattedPickupTime,
+      dropTime: formattedDropTime,
+      estimatedEarning: `₹${estimatedEarning.toFixed(2)}`,
+      billingDetails: {
+        totalItems,
+        subTotal: `₹${subTotal.toFixed(2)}`,
+        platformFee: `₹${platformFee.toFixed(2)}`,
+        deliveryCharge: `₹${deliveryCharge.toFixed(2)}`,
+        totalPaid: `₹${totalPaid.toFixed(2)}`
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching single order for rider:", error);
+    res.status(500).json({ message: "Server error while fetching order" });
+  }
+};
+
+export const getAllActiveOrdersForRiderController = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    // Validate riderId
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    // Fetch all active orders for rider
+    const activeOrders = await Order.find({
+      assignedRider: riderId,
+      assignedRiderStatus: 'Accepted'
+    })
+      .populate({
+        path: 'orderItems.medicineId',
+        select: 'name mrp description images pharmacyId',  // Populating medicine details
+        populate: {
+          path: 'pharmacyId',
+          select: 'name address contactNumber latitude longitude' // Populating pharmacy details
+        }
+      })
+      .populate({
+        path: 'userId',
+        select: 'name mobile location'  // Populating user details
+      })
+      .lean();
+
+    if (!activeOrders || activeOrders.length === 0) {
+      return res.status(404).json({ message: 'No active orders found' });
+    }
+
+    // Get rider location
+    const rider = await Rider.findById(riderId);
+    if (!rider) return res.status(404).json({ message: 'Rider not found' });
+
+    const riderLat = parseFloat(rider.latitude);
+    const riderLon = parseFloat(rider.longitude);
+
+    // Process each active order
+    const updatedOrders = activeOrders.map(order => {
+      const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
+      const userLocation = order.userId?.location?.coordinates;
+
+      if (!pharmacy || !userLocation) return order;
+
+      const pharmacyLat = parseFloat(pharmacy?.latitude);
+      const pharmacyLon = parseFloat(pharmacy?.longitude);
+      const userLat = userLocation?.[1];
+      const userLon = userLocation?.[0];
+
+      // Distance and time calculations
+      const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacyLon, pharmacyLat]);
+      const dropDistance = calculateDistance([pharmacyLon, pharmacyLat], [userLon, userLat]);
+
+      const pickupMinutes = calculateTime(pickupDistance);
+      const dropMinutes = calculateTime(dropDistance);
+
+      const pickupTime = addMinutesToTime(order.createdAt, pickupMinutes);
+      const dropTime = addMinutesToTime(order.createdAt, pickupMinutes + dropMinutes);
+
+      // Billing calculations
+      const totalItems = order.orderItems.length;
+      let subTotal = 0;
+
+      order.orderItems.forEach(item => {
+        const mrp = item?.medicineId?.mrp || 0;
+        const quantity = item?.quantity || 1;
+        subTotal += mrp * quantity;
+      });
+
+      const platformFee = 10; // Static platform fee
+      const deliveryCharge = parseFloat(rider.deliveryCharge) || 0; // Rider's delivery charge
+      const totalPaid = subTotal + platformFee + deliveryCharge;
+
+      return {
+        ...order,
+        formattedPickupDistance: `${pickupDistance.toFixed(2)} km`,
+        formattedDropDistance: `${dropDistance.toFixed(2)} km`,
+        pickupTime: formatTimeTo12Hour(pickupTime),
+        dropTime: formatTimeTo12Hour(dropTime),
+        billingDetails: {
+          totalItems,
+          subTotal: `₹${subTotal.toFixed(2)}`,
+          platformFee: `₹${platformFee.toFixed(2)}`,
+          deliveryCharge: `₹${deliveryCharge.toFixed(2)}`,
+          totalPaid: `₹${totalPaid.toFixed(2)}`
+        }
+      };
+    });
+
+    return res.status(200).json({ activeOrders: updatedOrders });
+  } catch (error) {
+    console.error("Error fetching active orders:", error);
+    return res.status(500).json({ message: "Server error while fetching active orders" });
+  }
+};
+
+
+
+export const getAllCompletedOrdersForRiderController = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    // Validate riderId
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    // Fetch all completed orders for rider
+    const completedOrders = await Order.find({
+      assignedRider: riderId,
+      assignedRiderStatus: 'Completed',
+      status: 'Delivered' // Order should be delivered
+    })
+      .populate({
+        path: 'orderItems.medicineId',
+        select: 'name mrp description images pharmacyId',  // Populating medicine details
+        populate: {
+          path: 'pharmacyId',
+          select: 'name address contactNumber latitude longitude' // Populating pharmacy details
+        }
+      })
+      .populate({
+        path: 'userId',
+        select: 'name mobile location'  // Populating user details
+      })
+      .lean();
+
+    if (!completedOrders || completedOrders.length === 0) {
+      return res.status(404).json({ message: 'No completed orders found' });
+    }
+
+    // Get rider location
+    const rider = await Rider.findById(riderId);
+    if (!rider) return res.status(404).json({ message: 'Rider not found' });
+
+    const riderLat = parseFloat(rider.latitude);
+    const riderLon = parseFloat(rider.longitude);
+
+    // Process each completed order
+    const updatedOrders = completedOrders.map(order => {
+      const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
+      const userLocation = order.userId?.location?.coordinates;
+
+      if (!pharmacy || !userLocation) return order;
+
+      const pharmacyLat = parseFloat(pharmacy?.latitude);
+      const pharmacyLon = parseFloat(pharmacy?.longitude);
+      const userLat = userLocation?.[1];
+      const userLon = userLocation?.[0];
+
+      // Distance and time calculations
+      const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacyLon, pharmacyLat]);
+      const dropDistance = calculateDistance([pharmacyLon, pharmacyLat], [userLon, userLat]);
+
+      const pickupMinutes = calculateTime(pickupDistance);
+      const dropMinutes = calculateTime(dropDistance);
+
+      const pickupTime = addMinutesToTime(order.createdAt, pickupMinutes);
+      const dropTime = addMinutesToTime(order.createdAt, pickupMinutes + dropMinutes);
+
+      // Billing calculations
+      const totalItems = order.orderItems.length;
+      let subTotal = 0;
+
+      order.orderItems.forEach(item => {
+        const mrp = item?.medicineId?.mrp || 0;
+        const quantity = item?.quantity || 1;
+        subTotal += mrp * quantity;
+      });
+
+      const platformFee = 10; // Static platform fee
+      const deliveryCharge = parseFloat(rider.deliveryCharge) || 0; // Rider's delivery charge
+      const totalPaid = subTotal + platformFee + deliveryCharge;
+
+      return {
+        ...order,
+        formattedPickupDistance: `${pickupDistance.toFixed(2)} km`,
+        formattedDropDistance: `${dropDistance.toFixed(2)} km`,
+        pickupTime: formatTimeTo12Hour(pickupTime),
+        dropTime: formatTimeTo12Hour(dropTime),
+        billingDetails: {
+          totalItems,
+          subTotal: `₹${subTotal.toFixed(2)}`,
+          platformFee: `₹${platformFee.toFixed(2)}`,
+          deliveryCharge: `₹${deliveryCharge.toFixed(2)}`,
+          totalPaid: `₹${totalPaid.toFixed(2)}`
+        }
+      };
+    });
+
+    return res.status(200).json({ completedOrders: updatedOrders });
+  } catch (error) {
+    console.error("Error fetching completed orders:", error);
+    return res.status(500).json({ message: "Server error while fetching completed orders" });
+  }
+};
+
+
+
+
+// export const getAllPreviousOrdersForRiderController = async (req, res) => {
+//   try {
+//     const { riderId } = req.params;
+
+//     // Validate riderId
+//     if (!mongoose.Types.ObjectId.isValid(riderId)) {
+//       return res.status(400).json({ message: "Invalid rider ID" });
+//     }
+
+//     // Fetch all active orders for rider
+//     const activeOrders = await Order.find({
+//       assignedRider: riderId,
+//       assignedRiderStatus: 'Completed'
+//     })
+//       .populate({
+//         path: 'orderItems.medicineId',
+//         select: 'name mrp description images pharmacyId',  // Populating medicine details
+//         populate: {
+//           path: 'pharmacyId',
+//           select: 'name address contactNumber latitude longitude' // Populating pharmacy details
+//         }
+//       })
+//       .populate({
+//         path: 'userId',
+//         select: 'name mobile location'  // Populating user details
+//       })
+//       .lean();
+
+//     if (!activeOrders || activeOrders.length === 0) {
+//       return res.status(404).json({ message: 'No active orders found' });
+//     }
+
+//     // Get rider location
+//     const rider = await Rider.findById(riderId);
+//     if (!rider) return res.status(404).json({ message: 'Rider not found' });
+
+//     const riderLat = parseFloat(rider.latitude);
+//     const riderLon = parseFloat(rider.longitude);
+
+//     // Process each active order
+//     const updatedOrders = activeOrders.map(order => {
+//       const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
+//       const userLocation = order.userId?.location?.coordinates;
+
+//       if (!pharmacy || !userLocation) return order;
+
+//       const pharmacyLat = parseFloat(pharmacy?.latitude);
+//       const pharmacyLon = parseFloat(pharmacy?.longitude);
+//       const userLat = userLocation?.[1];
+//       const userLon = userLocation?.[0];
+
+//       // Distance and time calculations
+//       const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacyLon, pharmacyLat]);
+//       const dropDistance = calculateDistance([pharmacyLon, pharmacyLat], [userLon, userLat]);
+
+//       const pickupMinutes = calculateTime(pickupDistance);
+//       const dropMinutes = calculateTime(dropDistance);
+
+//       const pickupTime = addMinutesToTime(order.createdAt, pickupMinutes);
+//       const dropTime = addMinutesToTime(order.createdAt, pickupMinutes + dropMinutes);
+
+//       // Billing calculations
+//       const totalItems = order.orderItems.length;
+//       let subTotal = 0;
+
+//       order.orderItems.forEach(item => {
+//         const mrp = item?.medicineId?.mrp || 0;
+//         const quantity = item?.quantity || 1;
+//         subTotal += mrp * quantity;
+//       });
+
+//       const platformFee = 10; // Static platform fee
+//       const deliveryCharge = parseFloat(rider.deliveryCharge) || 0; // Rider's delivery charge
+//       const totalPaid = subTotal + platformFee + deliveryCharge;
+
+//       return {
+//         ...order,
+//         formattedPickupDistance: `${pickupDistance.toFixed(2)} km`,
+//         formattedDropDistance: `${dropDistance.toFixed(2)} km`,
+//         pickupTime: formatTimeTo12Hour(pickupTime),
+//         dropTime: formatTimeTo12Hour(dropTime),
+//         billingDetails: {
+//           totalItems,
+//           subTotal: `₹${subTotal.toFixed(2)}`,
+//           platformFee: `₹${platformFee.toFixed(2)}`,
+//           deliveryCharge: `₹${deliveryCharge.toFixed(2)}`,
+//           totalPaid: `₹${totalPaid.toFixed(2)}`
+//         }
+//       };
+//     });
+
+//     return res.status(200).json({ activeOrders: updatedOrders });
+//   } catch (error) {
+//     console.error("Error fetching active orders:", error);
+//     return res.status(500).json({ message: "Server error while fetching active orders" });
+//   }
+// };
+
+
+
+
+
+
+// Add bank details to rider profile
+export const addBankDetailsToRider = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const {
+      accountHolderName,
+      accountNumber,
+      ifscCode,
+      bankName,
+      upiId
+    } = req.body;
+
+    if (!riderId) {
+      return res.status(400).json({ message: "Rider ID is required" });
+    }
+
+    if (!accountHolderName || !accountNumber || !ifscCode || !bankName) {
+      return res.status(400).json({ message: "All required bank fields must be provided" });
+    }
+
+    const rider = await Rider.findById(riderId);
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    const newBankDetail = {
+      accountHolderName,
+      accountNumber,
+      ifscCode,
+      bankName,
+      upiId: upiId || null
+    };
+
+    rider.accountDetails.push(newBankDetail);
+    await rider.save();
+
+    return res.status(200).json({
+      message: "Bank details added successfully",
+      accountDetails: rider.accountDetails
+    });
+
+  } catch (error) {
+    console.error("Error adding bank details:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+
+export const getRiderBankDetails = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    if (!riderId) {
+      return res.status(400).json({ message: "Rider ID is required" });
+    }
+
+    const rider = await Rider.findById(riderId).select('accountDetails');
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    return res.status(200).json({
+      message: "Bank details fetched successfully",
+      accountDetails: rider.accountDetails
+    });
+
+  } catch (error) {
+    console.error("Error fetching bank details:", error);
+    return res.status(500).json({
+      message: "Server error while fetching bank details",
+      error: error.message
+    });
+  }
+};
+
+
+// ✅ Mark Order As Delivered
+export const markOrderAsDeliveredController = async (req, res) => {
+  try {
+    const { riderId, orderId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid rider ID or order ID" });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    if (order.assignedRider?.toString() !== riderId) {
+      return res.status(403).json({ message: "This order is not assigned to you" });
+    }
+
+    const rider = await Rider.findById(riderId);
+    if (!rider) return res.status(404).json({ message: "Rider not found" });
+
+    const deliveryCharge = parseFloat(rider.deliveryCharge) || 0;
+
+    // ✅ Update Order
+    order.status = "Delivered";
+    order.paymentStatus = "Completed";
+    order.assignedRiderStatus = "Completed";
+
+    // ✅ Update Rider Wallet + Push Transaction
+    rider.wallet += deliveryCharge;
+    rider.walletTransactions.push({
+      amount: deliveryCharge,
+      type: "credit",
+      createdAt: new Date()
+    });
+
+    await Promise.all([order.save(), rider.save()]);
+
+    return res.status(200).json({
+      message: "Order marked as delivered successfully",
+      updatedWallet: `₹${rider.wallet.toFixed(2)}`
+    });
+  } catch (error) {
+    console.error("Error marking order as delivered:", error);
+    res.status(500).json({ message: "Server error while updating delivery status" });
+  }
+};
+
+
+
+export const getRiderWalletController = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    // Validate Rider ID
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    // Fetch Rider
+    const rider = await Rider.findById(riderId).select(
+      "name wallet deliveryCharge createdAt"
+    );
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    const deliveryCharge = parseFloat(rider.deliveryCharge || 0);
+
+    // Use rider's createdAt as start date and now as end date
+    const startDate = new Date(rider.createdAt);
+    const endDate = new Date();
+
+    // Fetch all completed orders in date range
+    const completedOrders = await Order.find({
+      assignedRider: riderId,
+      assignedRiderStatus: "Completed",
+      createdAt: { $gte: startDate, $lte: endDate },
+    });
+
+    const totalEarnings = completedOrders.length * deliveryCharge;
+
+    // Format date range
+    const formattedStart = moment(startDate).format("DD MMM YYYY");
+    const formattedEnd = moment(endDate).format("DD MMM YYYY");
+
+    return res.status(200).json({
+      wallet: `₹${(rider.wallet || 0).toFixed(2)}`,
+      totalEarningsMessage: `Total Earnings from ${formattedStart} to ${formattedEnd}: ₹${totalEarnings.toFixed(
+        2
+      )}`,
+    });
+  } catch (error) {
+    console.error("Error fetching rider wallet:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error while fetching wallet" });
+  }
+};
+
+
+export const withdrawAmountFromWalletController = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { amount, bankId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(bankId)) {
+      return res.status(400).json({ message: "Invalid riderId or bankId" });
+    }
+
+    if (!amount || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ message: "Invalid withdrawal amount" });
+    }
+
+    const rider = await Rider.findById(riderId);
+    if (!rider) return res.status(404).json({ message: "Rider not found" });
+
+    const walletBalance = parseFloat(rider.wallet || 0);
+    if (amount > walletBalance) {
+      return res.status(400).json({ message: "Insufficient wallet balance" });
+    }
+
+    const bankDetail = rider.accountDetails.find(b => b._id.toString() === bankId);
+    if (!bankDetail) {
+      return res.status(404).json({ message: "Bank account not found" });
+    }
+
+    // Create a new withdrawal request (but don't deduct now)
+    const request = new withdrawalRequestModel({
+      riderId,
+      amount,
+      bankDetail: {
+        accountHolderName: bankDetail.accountHolderName,
+        accountNumber: bankDetail.accountNumber,
+        ifscCode: bankDetail.ifscCode,
+        bankName: bankDetail.bankName,
+        upiId: bankDetail.upiId || null
+      },
+      status: 'Requested'
+    });
+
+    await request.save();
+
+    return res.status(200).json({
+      message: "Withdrawal request submitted successfully. Awaiting approval.",
+      requestId: request._id,
+      status: request.status
+    });
+
+  } catch (error) {
+    console.error("Error submitting withdrawal request:", error);
+    return res.status(500).json({ message: "Server error during withdrawal request" });
+  }
+};
+
+
+
+// ✅ Get Rider Notifications
+export const getRiderNotifications = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid Rider ID" });
+    }
+
+    const rider = await Rider.findById(riderId).select("notifications");
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    return res.status(200).json({
+      message: "Rider notifications fetched successfully",
+      notifications: rider.notifications.sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt) // latest first
+      ),
+    });
+  } catch (error) {
+    console.error("Error fetching rider notifications:", error);
+    return res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+
+
+// ✅ Change Rider Status (online / offline) — returns only status
+export const updateRiderStatus = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { status } = req.body; // "online" | "offline"
+
+    if (!["online", "offline"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status (use online/offline)" });
+    }
+
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    rider.status = status;
+    await rider.save();
+
+    return res.status(200).json({ status }); // ✅ Only return status
+
+  } catch (error) {
+    console.error("Error updating rider status:", error);
+    return res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+
+
+// ✅ Get Rider Orders by Status
+export const getRiderOrdersByStatus = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { status } = req.query; // query se status aayega
+
+    // Validate riderId
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    // Check rider exist karta hai ya nahi
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // Query filter
+    const query = { assignedRider: riderId };
+    if (status) {
+      query.status = status; // agar query me status hai to filter karo
+    }
+
+    // Orders fetch with populate
+    const orders = await Order.find(query)
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name mrp description images pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name address contactNumber latitude longitude",
+        },
+      })
+      .populate({
+        path: "userId",
+        select: "name mobile location",
+      })
+      .sort({ createdAt: -1 }); // latest orders first
+
+    if (!orders || orders.length === 0) {
+      return res.status(404).json({ message: "No orders found for this rider" });
+    }
+
+    return res.status(200).json({
+      message: "Orders fetched successfully",
+      orders,
+    });
+  } catch (error) {
+    console.error("Error fetching rider orders by status:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error while fetching orders", error: error.message });
+  }
+};
+
+
+
+
+// 📊 Rider Earnings Graph (from walletTransactions)
+export const getRiderEarningsGraph = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { filter } = req.query; // today | yesterday | thisWeek | lastWeek | thisMonth | lastMonth | last6Months | last8Months | last1Year
+
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    const rider = await Rider.findById(riderId).select("name wallet walletTransactions");
+    if (!rider) return res.status(404).json({ message: "Rider not found" });
+
+    const now = moment();
+    const ranges = {
+      today: [now.clone().startOf("day"), now.clone().endOf("day")],
+      yesterday: [now.clone().subtract(1, "days").startOf("day"), now.clone().subtract(1, "days").endOf("day")],
+      thisWeek: [now.clone().startOf("week"), now.clone().endOf("week")],
+      lastWeek: [now.clone().subtract(1, "week").startOf("week"), now.clone().subtract(1, "week").endOf("week")],
+      thisMonth: [now.clone().startOf("month"), now.clone().endOf("month")],
+      lastMonth: [now.clone().subtract(1, "month").startOf("month"), now.clone().subtract(1, "month").endOf("month")],
+      last6Months: [now.clone().subtract(6, "months").startOf("month"), now.clone().endOf("month")],
+      last8Months: [now.clone().subtract(8, "months").startOf("month"), now.clone().endOf("month")],
+      last1Year: [now.clone().subtract(1, "year").startOf("day"), now.clone().endOf("day")],
+    };
+
+    const [start, end] = ranges[filter] || ranges.thisWeek;
+
+    // ✅ Filter transactions
+    const transactions = rider.walletTransactions.filter(txn =>
+      moment(txn.createdAt).isBetween(start, end, null, "[]")
+    );
+
+    // ✅ Group by day
+    const earningsByDay = {};
+    transactions.forEach(txn => {
+      const day = moment(txn.createdAt).format("DD MMM");
+      if (!earningsByDay[day]) earningsByDay[day] = 0;
+      earningsByDay[day] += txn.amount;
+    });
+
+    // ✅ Sorted chart data
+    const chartData = Object.keys(earningsByDay).sort((a, b) => moment(a, "DD MMM") - moment(b, "DD MMM"))
+      .map(day => ({
+        day,
+        earnings: earningsByDay[day]
+      }));
+
+    return res.status(200).json({
+      rider: rider.name,
+      filter,
+      totalEarnings: transactions.reduce((sum, t) => sum + t.amount, 0),
+      walletBalance: rider.wallet,
+      chartData
+    });
+  } catch (error) {
+    console.error("Error fetching rider earnings graph:", error);
+    return res.status(500).json({ message: "Server error while fetching earnings graph" });
+  }
+};
+
+
+// ✅ Get Rider Driving License
+export const getRiderDrivingLicense = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+
+    // Validate riderId
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid rider ID" });
+    }
+
+    // Fetch Rider only with drivingLicense
+    const rider = await Rider.findById(riderId).select("drivingLicense");
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    return res.status(200).json({
+      riderId,
+      drivingLicense: rider.drivingLicense || null,
+    });
+  } catch (error) {
+    console.error("Error fetching driving license:", error);
+    return res
+      .status(500)
+      .json({ message: "Server error while fetching driving license" });
+  }
+};
+
+
+export const updateRiderLocation = async (req, res) => {
+  try {
+    const { riderId } = req.params; // URL se riderId le rahe hain
+    const { latitude, longitude } = req.body;
+
+    if (!riderId || latitude === undefined || longitude === undefined) {
+      return res.status(400).json({ message: 'riderId, latitude, and longitude are required' });
+    }
+
+    const updatedRider = await Rider.findByIdAndUpdate(
+      riderId,
+      {
+        latitude: latitude.toString(),
+        longitude: longitude.toString(),
+      },
+      { new: true }
+    );
+
+    if (!updatedRider) {
+      return res.status(404).json({ message: 'Rider not found' });
+    }
+
+    return res.status(200).json({
+      message: 'Rider location updated successfully',
+      latitude: updatedRider.latitude,
+      longitude: updatedRider.longitude,
+    });
+  } catch (error) {
+    console.error('Error updating rider location:', error);
+    return res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+};
+
+
+
+export const uploadDeliveryProof = async (req, res) => {
+  try {
+    const { riderId, orderId } = req.params;
+
+    // Ensure image is uploaded
+    if (!req.files || !req.files.image) {
+      return res.status(400).json({ message: "No image file uploaded" });
+    }
+
+    // Validate riderId as a valid ObjectId
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid riderId" });
+    }
+
+    // Find the order by orderId and check assignedRider field
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    // Debug: Log order details to ensure we get the assignedRider correctly
+    console.log("Order:", order);
+    console.log("Assigned Rider ID:", order.assignedRider ? order.assignedRider : "No Rider ID");
+
+    // Check if the order status is "Delivered"
+    if (order.status !== "Delivered") {
+      return res.status(400).json({ message: "Delivery proof can only be uploaded for delivered orders" });
+    }
+
+    // Check if the riderId matches the order's assignedRider
+    if (!order.assignedRider || order.assignedRider.toString() !== riderId) {
+      return res.status(403).json({ message: "Rider is not assigned to this order" });
+    }
+
+    // Upload the image to Cloudinary
+    const file = req.files.image;
+    const uploadResponse = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: "order_delivery_proofs", // Organize in Cloudinary under this folder
+    });
+
+    // Get the URL of the uploaded image
+    const deliveryProofUrl = uploadResponse.secure_url;
+
+    // Add the image URL to the deliveryProof array in the order
+    order.deliveryProof.push({
+      riderId, // Assign the riderId to the proof
+      imageUrl: deliveryProofUrl, // The uploaded image URL
+      uploadedAt: new Date(), // Timestamp of when the proof is uploaded
+    });
+
+    // Save the updated order with the new delivery proof
+    await order.save();
+
+    // Respond with the updated order data
+    res.status(200).json({
+      success: true,
+      message: "Delivery proof uploaded successfully",
+      deliveryProof: order.deliveryProof,
+    });
+  } catch (error) {
+    console.error("🔥 Error in uploadDeliveryProof:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+export const createRiderQuery = async (req, res) => {
+  try {
+    // Destructure the body to get the necessary fields
+    const { riderId, name, email, mobile, message } = req.body;
+
+    // Validate that riderId exists (optional but recommended)
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // Create a new query document for the rider
+    const query = new Query({
+      riderId,
+      name,
+      email,
+      mobile,
+      message,
+    });
+
+    // Save the query to the database
+    await query.save();
+
+    // Send response
+    res.status(201).json({ message: "Query submitted successfully", query });
+  } catch (error) {
+    // Handle any errors
+    console.error("Error creating rider query:", error);
+    res.status(500).json({ message: "Error creating query", error });
+  }
+};

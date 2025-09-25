@@ -2,6 +2,7 @@ import cloudinary from '../config/cloudinary.js';
 import Category from '../Models/Category.js';
 import Service from '../Models/Service.js';
 import dotenv from 'dotenv'
+import mongoose from 'mongoose';
 
 
 dotenv.config();
@@ -57,6 +58,80 @@ export const createCategory = async (req, res) => {
   } catch (error) {
     console.error('Error creating category:', error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+
+
+// ✅ Delete Category
+export const deleteCategory = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+      return res.status(400).json({ message: "Invalid category ID" });
+    }
+
+    const category = await Category.findByIdAndDelete(categoryId);
+
+    if (!category) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    return res.status(200).json({
+      message: "Category deleted successfully",
+      deletedCategory: category,
+    });
+
+  } catch (error) {
+    console.error("Error deleting category:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ✅ Update Category
+export const updateCategory = async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { categoryName, image, serviceName } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+      return res.status(400).json({ message: "Invalid category ID" });
+    }
+
+    let imageUrl = image;
+
+    // If file uploaded
+    if (req.files && req.files.image) {
+      const uploaded = await cloudinary.uploader.upload(req.files.image.tempFilePath, {
+        folder: "categories",
+      });
+      imageUrl = uploaded.secure_url;
+    }
+
+    const updatedCategory = await Category.findByIdAndUpdate(
+      categoryId,
+      {
+        categoryName,
+        image: imageUrl,
+        serviceName,
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedCategory) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    return res.status(200).json({
+      message: "Category updated successfully",
+      category: updatedCategory,
+    });
+
+  } catch (error) {
+    console.error("Error updating category:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 

@@ -14,9 +14,15 @@ const medicineSchema = new mongoose.Schema({
   price: {
     type: Number,
   },
+   mrp: {                // ✅ Added MRP field
+    type: Number,
+  },
   description: {
     type: String,
-  }
+  },
+   categoryName: {
+    type: String,
+  },
 }, { timestamps: true });
 
 const Medicine = mongoose.model('Medicine', medicineSchema);

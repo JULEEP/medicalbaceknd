@@ -37,6 +37,50 @@ const userSchema = new mongoose.Schema({
       default: [0, 0]
     }
   },
+  myAddresses: [
+    {
+      house: { type: String, },
+      street: { type: String, },
+      city: { type: String, },
+      state: { type: String, },
+      pincode: { type: String, },
+      country: { type: String,}
+    }
+  ],
+  notifications: [
+  {
+    orderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Order'
+    },
+    status: String,
+    message: String,
+    timestamp: {
+      type: Date,
+      default: Date.now
+    },
+    read: {
+      type: Boolean,
+      default: false
+    }
+  }
+],
+  profileImage: {
+    type: String,
+    default:
+      'https://img.freepik.com/premium-vector/student-avatar-illustration-user-profile-icon-youth-avatar_118339-4406.jpg?w=2000'
+  },
+    status: {
+      type: String,
+      enum: ["active", "inactive", "blocked"], // optional, for control
+      default: "active", // ✅ default value
+    },
+      periodicMedsPlan: {
+    isActive: {
+      type: Boolean,
+      default: false,
+    },
+  },
 }, {
   timestamps: true  // CreatedAt and UpdatedAt fields automatically
 });

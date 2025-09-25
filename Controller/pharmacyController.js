@@ -3,6 +3,9 @@ import Pharmacy from '../Models/Pharmacy.js';
 import PharmacyCategory from '../Models/PharmacyCategory.js';
 import Medicine from '../Models/Medicine.js';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
+import Prescription from '../Models/Prescription.js';
+import { Notification } from '../Models/Notification.js';
 
 dotenv.config();
 
@@ -20,17 +23,25 @@ export const createPharmacy = async (req, res) => {
       latitude,
       longitude,
       categories,
-      products
+      vendorName,
+      vendorEmail,
+      vendorPhone,
+      address,
+      aadhar,
+      panCard,
+      license
     } = req.body;
 
-    // ✅ Validate required fields
-    if (!name || !latitude || !longitude) {
-      return res.status(400).json({ message: 'Name, latitude, and longitude are required' });
+    // Required field validation
+    if (!name || !latitude || !longitude || !address) {
+      return res.status(400).json({
+        message: 'Name, latitude, longitude, and address are required'
+      });
     }
 
     let imageUrl = '';
 
-    // 📷 Upload pharmacy image to Cloudinary or use direct URL
+    // Upload pharmacy image
     if (req.files?.image) {
       const uploaded = await cloudinary.uploader.upload(req.files.image.tempFilePath, {
         folder: 'pharmacies',
@@ -42,50 +53,295 @@ export const createPharmacy = async (req, res) => {
       return res.status(400).json({ message: 'Pharmacy image file or valid URL is required' });
     }
 
-    // ✅ Parse categories
+    // Parse categories
     let parsedCategories = [];
-    if (typeof categories === 'string') {
-      parsedCategories = JSON.parse(categories);
-    } else if (Array.isArray(categories)) {
-      parsedCategories = categories;
+    if (categories) {
+      let catArray = [];
+      if (typeof categories === 'string') catArray = JSON.parse(categories);
+      else if (Array.isArray(categories)) catArray = categories;
+
+      if (req.files?.categoryImages) {
+        const categoryFiles = Array.isArray(req.files.categoryImages)
+          ? req.files.categoryImages
+          : [req.files.categoryImages];
+
+        for (let i = 0; i < categoryFiles.length; i++) {
+          const file = categoryFiles[i];
+          const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+            folder: 'pharmacy_categories',
+          });
+
+          parsedCategories.push({
+            name: catArray[i]?.name || file.name.split('.')[0],
+            image: uploaded.secure_url
+          });
+        }
+      } else {
+        parsedCategories = catArray;
+      }
     }
 
-    // 🛡️ Validate each category has name and image
-    if (parsedCategories.length > 0 && !parsedCategories.every(cat => cat.name && cat.image)) {
-      return res.status(400).json({ message: 'Each category must include both name and image' });
+    // Upload Aadhar document if exists
+    let aadharFileUrl = '';
+    if (req.files?.aadharFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.aadharFile.tempFilePath, {
+        folder: 'pharmacy_aadhar_docs',
+      });
+      aadharFileUrl = uploaded.secure_url;
     }
 
-    // ✅ Parse products
-    let parsedProducts = [];
-    if (typeof products === 'string') {
-      parsedProducts = JSON.parse(products);
-    } else if (Array.isArray(products)) {
-      parsedProducts = products;
+    // Upload PAN card document if exists
+    let panCardFileUrl = '';
+    if (req.files?.panCardFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.panCardFile.tempFilePath, {
+        folder: 'pharmacy_pancard_docs',
+      });
+      panCardFileUrl = uploaded.secure_url;
     }
 
-    // 🏥 Create new pharmacy
+    // Upload License document if exists
+    let licenseFileUrl = '';
+    if (req.files?.licenseFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.licenseFile.tempFilePath, {
+        folder: 'pharmacy_license_docs',
+      });
+      licenseFileUrl = uploaded.secure_url;
+    }
+
+    // Generate vendor ID and 4-digit password
+    const lastPharmacy = await Pharmacy.findOne({})
+      .sort({ createdAt: -1 })
+      .select('vendorId')
+      .lean();
+
+    let newNumber = 100001; // starting number
+
+    if (lastPharmacy?.vendorId && /^CX\d{6}$/.test(lastPharmacy.vendorId)) {
+      const lastNumber = parseInt(lastPharmacy.vendorId.slice(2), 10);
+      newNumber = lastNumber + 1;
+    }
+
+    const vendorId = `CX${newNumber.toString().padStart(6, '0')}`;
+    const password = Math.floor(1000 + Math.random() * 9000).toString();
+
+    // Create pharmacy
     const newPharmacy = new Pharmacy({
       name,
       image: imageUrl,
       latitude: parseFloat(latitude),
       longitude: parseFloat(longitude),
+      address,
       categories: parsedCategories,
-      products: parsedProducts,
+      vendorName,
+      vendorEmail,
+      vendorPhone,
+      vendorId,
+      password,
+      status: "Pending",
+
+      // NEW fields added
+      aadhar,
+      aadharFile: aadharFileUrl,
+      panCard,
+      panCardFile: panCardFileUrl,
+      license,
+      licenseFile: licenseFileUrl
     });
 
-    // 📍 location (GeoJSON) will be auto-handled in schema pre-save hook
     await newPharmacy.save();
+
+    // Create notification
+    await Notification.create({
+      type: "Pharmacy",
+      referenceId: newPharmacy._id,
+      message: `New pharmacy "${newPharmacy.name}" created`,
+      status: "Pending"
+    });
 
     return res.status(201).json({
       message: 'Pharmacy created successfully',
       pharmacy: newPharmacy,
+      vendorCredentials: { vendorId, password }
     });
 
   } catch (error) {
     console.error('Error creating pharmacy:', error);
-    return res.status(500).json({ message: 'Server error', error: error.message });
+    return res.status(500).json({
+      message: 'Server error',
+      error: error.message
+    });
   }
 };
+
+
+export const updatePharmacy = async (req, res) => {
+  try {
+    const { pharmacyId } = req.params;
+    const {
+      name,
+      image,
+      latitude,
+      longitude,
+      categories,
+      vendorName,
+      vendorEmail,
+      vendorPhone,
+      status,
+      address,
+      aadhar,
+      panCard,
+      license,
+    } = req.body;
+
+    const pharmacy = await Pharmacy.findById(pharmacyId);
+    if (!pharmacy) {
+      return res.status(404).json({ message: 'Pharmacy not found' });
+    }
+
+    // 🌐 Image upload if new image provided
+    let imageUrl = pharmacy.image;
+    if (req.files?.image) {
+      const uploaded = await cloudinary.uploader.upload(req.files.image.tempFilePath, {
+        folder: 'pharmacies',
+      });
+      imageUrl = uploaded.secure_url;
+    } else if (image?.startsWith('http')) {
+      imageUrl = image;
+    }
+
+    // 🏷️ Handle categories update (if provided)
+    let parsedCategories = pharmacy.categories;
+
+    if (categories) {
+      let catArray = [];
+
+      if (typeof categories === 'string') {
+        catArray = JSON.parse(categories);
+      } else if (Array.isArray(categories)) {
+        catArray = categories;
+      }
+
+      if (req.files?.categoryImages) {
+        const categoryFiles = Array.isArray(req.files.categoryImages)
+          ? req.files.categoryImages
+          : [req.files.categoryImages];
+
+        parsedCategories = [];
+
+        for (let i = 0; i < categoryFiles.length; i++) {
+          const file = categoryFiles[i];
+          const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+            folder: 'pharmacy_categories',
+          });
+
+          parsedCategories.push({
+            name: catArray[i]?.name || file.name.split('.')[0],
+            image: uploaded.secure_url
+          });
+        }
+      } else {
+        parsedCategories = catArray;
+      }
+
+      if (!parsedCategories.every(cat => cat.name && cat.image)) {
+        return res.status(400).json({ message: 'Each category must have name and image' });
+      }
+    }
+
+    // 📝 Upload Aadhar, PAN Card, License documents if they exist
+    let aadharFileUrl = pharmacy.aadharFile;
+    if (req.files?.aadharFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.aadharFile.tempFilePath, {
+        folder: 'pharmacy_aadhar_docs',
+      });
+      aadharFileUrl = uploaded.secure_url;
+    }
+
+    let panCardFileUrl = pharmacy.panCardFile;
+    if (req.files?.panCardFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.panCardFile.tempFilePath, {
+        folder: 'pharmacy_pancard_docs',
+      });
+      panCardFileUrl = uploaded.secure_url;
+    }
+
+    let licenseFileUrl = pharmacy.licenseFile;
+    if (req.files?.licenseFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.licenseFile.tempFilePath, {
+        folder: 'pharmacy_license_docs',
+      });
+      licenseFileUrl = uploaded.secure_url;
+    }
+
+    // 🔄 Update fields
+    pharmacy.name = name || pharmacy.name;
+    pharmacy.image = imageUrl;
+    pharmacy.latitude = latitude ? parseFloat(latitude) : pharmacy.latitude;
+    pharmacy.longitude = longitude ? parseFloat(longitude) : pharmacy.longitude;
+    pharmacy.categories = parsedCategories;
+    pharmacy.vendorName = vendorName || pharmacy.vendorName;
+    pharmacy.vendorEmail = vendorEmail || pharmacy.vendorEmail;
+    pharmacy.vendorPhone = vendorPhone || pharmacy.vendorPhone;
+    pharmacy.address = address || pharmacy.address;
+    pharmacy.aadhar = aadhar || pharmacy.aadhar;
+    pharmacy.panCard = panCard || pharmacy.panCard;
+    pharmacy.license = license || pharmacy.license;
+    pharmacy.aadharFile = aadharFileUrl;
+    pharmacy.panCardFile = panCardFileUrl;
+    pharmacy.licenseFile = licenseFileUrl;
+
+    // 🟢 Add the status update
+    if (status) {
+      const validStatuses = ['Active', 'Inactive', 'Suspended']; // You can add more valid statuses if needed
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ message: 'Invalid status' });
+      }
+      pharmacy.status = status;
+    }
+
+    // Save updated pharmacy
+    await pharmacy.save();
+
+    // Create notification for updating pharmacy
+    await Notification.create({
+      type: 'Pharmacy',
+      referenceId: pharmacy._id,
+      message: `Pharmacy "${pharmacy.name}" updated`,
+      status: 'Pending',
+    });
+
+    // Return updated pharmacy details
+    res.status(200).json({
+      message: 'Pharmacy updated successfully',
+      pharmacy,
+    });
+
+  } catch (error) {
+    console.error('Error updating pharmacy:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+export const deletePharmacy = async (req, res) => {
+  try {
+    const { pharmacyId } = req.params;
+
+    const deleted = await Pharmacy.findByIdAndDelete(pharmacyId);
+
+    if (!deleted) {
+      return res.status(404).json({ message: 'Pharmacy not found or already deleted' });
+    }
+
+    res.status(200).json({ message: 'Pharmacy deleted successfully' });
+
+  } catch (error) {
+    console.error('Error deleting pharmacy:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
 // 📦 Get All Pharmacies
 export const getAllPharmacies = async (req, res) => {
   try {
@@ -101,6 +357,88 @@ export const getAllPharmacies = async (req, res) => {
   }
 };
 
+
+
+export const getPharmacies = async (req, res) => {
+  try {
+    const { pharmacyId } = req.params;
+
+    if (pharmacyId) {
+      // 🛡️ Validate ID
+      if (!mongoose.Types.ObjectId.isValid(pharmacyId)) {
+        return res.status(400).json({ message: 'Invalid pharmacy ID' });
+      }
+
+      // 🔍 Find the pharmacy
+      const pharmacy = await Pharmacy.findById(pharmacyId);
+      if (!pharmacy) {
+        return res.status(404).json({ message: 'Pharmacy not found' });
+      }
+
+      // 💊 Find medicines related to this pharmacy
+      const medicines = await Medicine.find({ pharmacyId });
+
+      return res.status(200).json({
+        message: 'Pharmacy fetched successfully',
+        pharmacy,
+        totalMedicines: medicines.length,
+        medicines,
+      });
+    }
+
+    // 📦 If no pharmacyId → fetch all pharmacies
+    const pharmacies = await Pharmacy.find();
+
+    return res.status(200).json({
+      message: 'Pharmacies fetched successfully',
+      total: pharmacies.length,
+      pharmacies,
+    });
+
+  } catch (error) {
+    console.error('Error fetching pharmacies:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+// Add/Edit Pharmacy
+export const addOrUpdatePharmacy = async (req, res) => {
+  const { pharmacyId } = req.params;
+  const { name, image, latitude, longitude, categories } = req.body;
+
+  try {
+    if (pharmacyId) {
+      // 🛡️ Validate ID
+      if (!mongoose.Types.ObjectId.isValid(pharmacyId)) {
+        return res.status(400).json({ message: 'Invalid pharmacy ID' });
+      }
+
+      // 🔍 Find and update the pharmacy
+      const pharmacy = await Pharmacy.findByIdAndUpdate(
+        pharmacyId,
+        { name, image, latitude, longitude, categories },
+        { new: true, runValidators: true }
+      );
+
+      if (!pharmacy) {
+        return res.status(404).json({ message: 'Pharmacy not found to update' });
+      }
+
+      return res.status(200).json({ message: 'Pharmacy updated successfully', pharmacy });
+    } else {
+      // 🆕 Add a new pharmacy
+      const pharmacy = new Pharmacy({ name, image, latitude, longitude, categories });
+      await pharmacy.save();
+
+      return res.status(201).json({ message: 'Pharmacy created successfully', pharmacy });
+    }
+  } catch (error) {
+    console.error('Error adding/updating pharmacy:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
 
 
 
@@ -171,42 +509,52 @@ export const getAllPharmacyCategories = async (req, res) => {
 // ➕ Create Medicine
 export const createMedicine = async (req, res) => {
   try {
-    const { pharmacyId, name, price, description } = req.body;
+    const { pharmacyId, name, price, mrp, description, categoryName } = req.body;
 
-
-    // Check pharmacy exists
+    // ✅ Check pharmacy exists
     const pharmacy = await Pharmacy.findById(pharmacyId);
     if (!pharmacy) {
       return res.status(404).json({ message: 'Pharmacy not found' });
     }
 
+    // 🔍 Validate category name exists in pharmacy
+    const categoryExists = pharmacy.categories.some(
+      cat => cat.name.toLowerCase() === categoryName?.toLowerCase()
+    );
+
+    if (!categoryExists) {
+      return res.status(400).json({ message: `Category "${categoryName}" not found in this pharmacy` });
+    }
+
     let images = [];
 
-    // Case 1: Upload multiple files
+    // 📷 Case 1: Upload multiple files
     if (req.files && req.files.images) {
       const files = Array.isArray(req.files.images) ? req.files.images : [req.files.images];
-
       for (let file of files) {
         const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
           folder: 'medicines',
         });
         images.push(uploaded.secure_url);
       }
-    } 
-    // Case 2: URLs passed directly in req.body.images[]
+    }
+    // 🌐 Case 2: URLs passed directly
     else if (Array.isArray(req.body.images)) {
       images = req.body.images.filter(img => img.startsWith('http'));
-    } 
+    }
     else {
       return res.status(400).json({ message: 'Images are required (upload or URL)' });
     }
 
+    // 🏥 Create medicine with category name only
     const newMedicine = new Medicine({
       pharmacyId,
       name,
       images,
       price,
-      description
+      mrp, // ✅ Added MRP
+      description,
+      categoryName
     });
 
     await newMedicine.save();
@@ -220,7 +568,9 @@ export const createMedicine = async (req, res) => {
         name: populated.name,
         images: populated.images,
         price: populated.price,
+        mrp: populated.mrp, // ✅ Return MRP
         description: populated.description,
+        categoryName: populated.categoryName,
         pharmacy: populated.pharmacyId,
       }
     });
@@ -232,32 +582,186 @@ export const createMedicine = async (req, res) => {
 };
 
 
-// 📥 Get All Medicines
-export const getAllMedicines = async (req, res) => {
+export const updateMedicine = async (req, res) => {
   try {
-    const medicines = await Medicine.find()
+    const { medicineId } = req.params;
+    const { name, price, mrp, description, categoryName } = req.body;
+
+    // 🔍 Check medicine exists
+    const medicine = await Medicine.findById(medicineId);
+    if (!medicine) {
+      return res.status(404).json({ message: 'Medicine not found' });
+    }
+
+    // ✅ If categoryName is provided, validate against pharmacy's categories
+    if (categoryName) {
+      const pharmacy = await Pharmacy.findById(medicine.pharmacyId);
+      if (!pharmacy) {
+        return res.status(404).json({ message: 'Pharmacy not found for this medicine' });
+      }
+
+      const categoryExists = pharmacy.categories.some(
+        cat => cat.name.toLowerCase() === categoryName.toLowerCase()
+      );
+
+      if (!categoryExists) {
+        return res.status(400).json({ message: `Category "${categoryName}" not found in this pharmacy` });
+      }
+      medicine.categoryName = categoryName;
+    }
+
+    // 📷 Update images if provided
+    if (req.files && req.files.images) {
+      const files = Array.isArray(req.files.images) ? req.files.images : [req.files.images];
+      let uploadedImages = [];
+      for (let file of files) {
+        const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: 'medicines',
+        });
+        uploadedImages.push(uploaded.secure_url);
+      }
+      medicine.images = uploadedImages;
+    } else if (Array.isArray(req.body.images)) {
+      medicine.images = req.body.images.filter(img => img.startsWith('http'));
+    }
+
+    // 🖊 Update text fields if provided
+    if (name) medicine.name = name;
+    if (price) medicine.price = price;
+    if (mrp) medicine.mrp = mrp; // ✅ Update MRP
+    if (description) medicine.description = description;
+
+    await medicine.save();
+
+    const populated = await Medicine.findById(medicine._id)
       .populate('pharmacyId', 'name location');
 
-    // Format each medicine as per createMedicine response
+    res.status(200).json({
+      message: 'Medicine updated successfully',
+      medicine: populated
+    });
+
+  } catch (error) {
+    console.error('Error updating medicine:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+export const deleteMedicine = async (req, res) => {
+  try {
+    const { medicineId } = req.params;
+
+    // 🔍 Check medicine exists
+    const medicine = await Medicine.findById(medicineId);
+    if (!medicine) {
+      return res.status(404).json({ message: 'Medicine not found' });
+    }
+
+    // (Optional) ❌ Delete images from Cloudinary if needed
+    // This requires storing `public_id` when uploading
+    // for (let img of medicine.images) {
+    //   const publicId = img.split('/').pop().split('.')[0];
+    //   await cloudinary.uploader.destroy(`medicines/${publicId}`);
+    // }
+
+    await Medicine.findByIdAndDelete(medicineId);
+
+    res.status(200).json({ message: 'Medicine deleted successfully' });
+
+  } catch (error) {
+    console.error('Error deleting medicine:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+
+
+
+
+export const getAllMedicines = async (req, res) => {
+  try {
+    const { categoryName, name } = req.query;
+
+    // Build query object
+    const query = {};
+
+    // Case-insensitive exact match for categoryName
+    if (categoryName && categoryName.trim() !== "") {
+      query.categoryName = { $regex: new RegExp(`^${categoryName}$`, "i") };
+    }
+
+    // Case-insensitive partial match for name
+    if (name && name.trim() !== "") {
+      query.name = { $regex: new RegExp(name, "i") }; // partial match
+    }
+
+    // Fetch medicines and populate pharmacy with name, location, and address
+    const medicines = await Medicine.find(query)
+      .populate("pharmacyId", "name address");
+
+    // Format response
     const formatted = medicines.map(med => ({
       medicineId: med._id,
       name: med.name,
       images: med.images,
       price: med.price,
+      mrp: med.mrp,
       description: med.description,
-      pharmacy: med.pharmacyId, // contains name & location
+      categoryName: med.categoryName,
+      pharmacy: med.pharmacyId,  // now includes address too
     }));
 
     res.status(200).json({
-      message: 'Medicines fetched successfully',
+      message: "Medicines fetched successfully",
       total: formatted.length,
       medicines: formatted
     });
   } catch (error) {
-    console.error('Error fetching medicines:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Error fetching medicines:", error);
+    res.status(500).json({ message: "Server error" });
   }
 };
+
+
+
+// 📦 Get Medicines by Pharmacy & Category
+// export const getMedicinesByPharmacyAndCategory = async (req, res) => {
+//   try {
+//     const { pharmacyId } = req.params;
+//     const { categoryName } = req.query;
+
+//     // ✅ Validate pharmacyId
+//     if (!mongoose.Types.ObjectId.isValid(pharmacyId)) {
+//       return res.status(400).json({ message: 'Invalid pharmacy ID' });
+//     }
+
+//     // ✅ Ensure pharmacy exists
+//     const pharmacy = await Pharmacy.findById(pharmacyId);
+//     if (!pharmacy) {
+//       return res.status(404).json({ message: 'Pharmacy not found' });
+//     }
+
+//     // 🔍 Build query object
+//     let query = { pharmacyId };
+//     if (categoryName) {
+//       query.categoryName = { $regex: new RegExp(`^${categoryName}$`, 'i') }; // Case-insensitive exact match
+//     }
+
+//     // 📦 Fetch medicines
+//     const medicines = await Medicine.find(query).populate('pharmacyId', 'name location');
+
+//     res.status(200).json({
+//       message: 'Medicines fetched successfully',
+//       total: medicines.length,
+//       medicines
+//     });
+
+//   } catch (error) {
+//     console.error('Error fetching medicines:', error);
+//     res.status(500).json({ message: 'Server error' });
+//   }
+// };
 
 
 
@@ -282,6 +786,7 @@ export const getSingleMedicine = async (req, res) => {
         images: medicine.images,
         price: medicine.price,
         description: medicine.description,
+        categoryName: medicine.categoryName,
         pharmacy: medicine.pharmacyId, // populated: { name, location }
       }
     });
@@ -291,3 +796,96 @@ export const getSingleMedicine = async (req, res) => {
   }
 };
 
+
+
+// ✅ Get Prescriptions for a Pharmacy with populate and safe fallback
+export const getPrescriptionsForPharmacy = async (req, res) => {
+  try {
+    const { pharmacyId } = req.params;
+
+    if (!pharmacyId) {
+      return res.status(400).json({ message: "pharmacyId is required in params" });
+    }
+
+    const prescriptions = await Prescription.find({ pharmacyId })
+      .populate({
+        path: "userId",
+        select: "name email mobile",
+        options: { lean: true }, // return plain JS object
+      })
+      .populate({
+        path: "pharmacyId",
+        select: "name email mobile",
+        options: { lean: true },
+      })
+      .sort({ createdAt: -1 })
+      .lean(); // convert all docs to plain JS objects
+
+    // Optional: if some userId are missing, replace with placeholder
+    const prescriptionsWithFallback = prescriptions.map((p) => ({
+      ...p,
+      userId: p.userId || { _id: null, name: "Deleted User", email: "", mobile: "" },
+    }));
+
+    res.status(200).json({
+      message: "Prescriptions fetched successfully",
+      prescriptions: prescriptionsWithFallback,
+    });
+  } catch (error) {
+    console.error("Get Prescriptions Error:", error);
+    res.status(500).json({ message: "Error fetching prescriptions", error: error.message });
+  }
+};
+
+
+
+export const getMedicinesByPharmacyAndCategory = async (req, res) => {
+  try {
+    const { pharmacyId } = req.params;
+    const { category } = req.query; // e.g., ?category=Fever
+
+    // Validate pharmacyId
+    if (!mongoose.Types.ObjectId.isValid(pharmacyId)) {
+      return res.status(400).json({ message: "Invalid pharmacy ID" });
+    }
+
+    // Find the pharmacy
+    const pharmacy = await Pharmacy.findById(pharmacyId);
+    if (!pharmacy) {
+      return res.status(404).json({ message: "Pharmacy not found" });
+    }
+
+    // If category provided → check if it's valid in this pharmacy
+    if (category) {
+      const matchedCategory = pharmacy.categories.find(cat => cat.name.toLowerCase() === category.toLowerCase());
+      if (!matchedCategory) {
+        return res.status(404).json({ message: `Category '${category}' not found in this pharmacy` });
+      }
+    }
+
+    // Get medicines for this pharmacy and filter by category if provided
+    const query = { pharmacyId };
+    if (category) {
+      query.categoryName = category;  // Filter medicines by categoryName
+    }
+
+    const medicines = await Medicine.find(query);
+
+    return res.status(200).json({
+      message: "Medicines fetched successfully",
+      pharmacy: {
+        _id: pharmacy._id,
+        name: pharmacy.name,
+        address: pharmacy.address,
+        image: pharmacy.image,
+      },
+      categoryFilter: category || null,
+      totalMedicines: medicines.length,
+      medicines,
+    });
+
+  } catch (error) {
+    console.error("Error fetching medicines:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};

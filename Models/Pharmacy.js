@@ -16,17 +16,40 @@ const pharmacySchema = new mongoose.Schema({
     },
     coordinates: {
       type: [Number], // [longitude, latitude]
-      required: true
     }
   },
 
   // All category names in a flat array
 categories: [
   {
-    name: { type: String },
-    image: { type: String } // New field for category image
+    name: { type: String,  },
+    image: { type: String, }
   }
 ],
+ // Vendor / Owner details
+  vendorName: { type: String, },
+  vendorEmail: { type: String,  },
+  vendorPhone: { type: String, },
+  status: { type: String, enum: ["Pending", "Active", "Inactive"], default: "Pending" },
+   vendorId: { type: String, unique: true }, // auto-generated vendor ID
+  password: { type: String }, // 4-digit password (can be hashed if needed)
+  address: {
+  type: String,
+},
+
+
+  // New fields for documents
+  aadhar: { type: String },
+  panCard: { type: String },
+  license: { type: String },
+  aadharFile: { type: String }, // URL to the uploaded aadhar photo
+  panCardNumber: { type: String },
+  panCardImage: { type: String }, // URL to the uploaded pan card photo
+  licenseNumber: { type: String },
+  licenseFile: { type: String }, // URL to the uploaded license file (image or PDF)
+  panCardFile: { type: String }, // URL to the uploaded license file (image or PDF)
+
+
 
   // All products in a flat array of objects
   products: [
@@ -36,7 +59,16 @@ categories: [
       price: { type: Number },
       image: { type: String }
     }
-  ]
+  ],
+    bankDetails: [
+    {
+      accountNumber: { type: String, },
+      ifscCode: { type: String, },
+      branchName: { type: String, },
+      bankName: { type: String, },
+      accountHolderName: { type: String, }, // Add the account holder name
+    },
+  ],
 }, { timestamps: true });
 
 // Add 2dsphere index for location
