@@ -16,6 +16,9 @@ import Rider from '../Models/Rider.js';
 import { Notification } from '../Models/Notification.js';
 import Razorpay from "razorpay";
 import Chat from '../Models/Chat.js';
+import { format } from 'date-fns';
+import puppeteer from 'puppeteer';
+import fs from 'fs';
 
 
 
@@ -68,8 +71,16 @@ export const registerUser = async (req, res) => {
 
     await newUser.save();
 
+    // ✅ Generate JWT token after successful registration
+    const token = jwt.sign(
+      { id: newUser._id },
+      process.env.JWT_SECRET_KEY,
+      { expiresIn: '1h' }
+    );
+
     return res.status(201).json({
       message: "User registered successfully",
+      token, // Include token in response
       user: {
         id: newUser._id,
         name: newUser.name,
@@ -84,7 +95,6 @@ export const registerUser = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
-
 
 
 export const updateUser = async (req, res) => {
@@ -919,21 +929,26 @@ export const createBookingFromCart = async (req, res) => {
     const { userId } = req.params;
     const { addressId, notes, voiceNoteUrl, paymentMethod, transactionId } = req.body;
 
-    // Validate IDs
-    if (!mongoose.Types.ObjectId.isValid(userId))
+    // Validate User and Address IDs
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ message: "Invalid user ID" });
+    }
 
-    if (!mongoose.Types.ObjectId.isValid(addressId))
+    if (!mongoose.Types.ObjectId.isValid(addressId)) {
       return res.status(400).json({ message: "Invalid address ID" });
-
+    }
 
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     const deliveryAddress = user.myAddresses.id(addressId);
-    if (!deliveryAddress) return res.status(404).json({ message: "Address not found" });
+    if (!deliveryAddress) {
+      return res.status(404).json({ message: "Address not found" });
+    }
 
-    // Fetch cart and validate
+    // Fetch and validate cart
     const cart = await Cart.findOne({ userId }).populate({
       path: "items.medicineId",
       select: "name mrp images description pharmacyId",
@@ -948,20 +963,16 @@ export const createBookingFromCart = async (req, res) => {
       medicineId: item.medicineId._id,
       quantity: item.quantity,
       name: item.medicineId.name,
-      price: item.price, // mrp from cart item
+      price: item.price, // Price from cart
       images: item.medicineId.images,
       description: item.medicineId.description,
       pharmacy: item.medicineId.pharmacyId,
     }));
 
-    // Use stored cart totals
-    const subTotal = cart.subTotal;
-    const platformFee = cart.platformFee;
-    const deliveryCharge = cart.deliveryCharge;
+    // Use cart totals for the order
+    const { subTotal, platformFee, deliveryCharge, totalPayable } = cart;
 
-    const totalAmount = cart.totalPayable;
-
-    // Find nearest rider based on user's location
+    // Find nearest rider
     const allRiders = await Rider.find();
     let nearestRider = null;
     let minDistance = Infinity;
@@ -969,20 +980,25 @@ export const createBookingFromCart = async (req, res) => {
     const userLat = user.location?.coordinates[1] || 0;
     const userLon = user.location?.coordinates[0] || 0;
 
-    allRiders.forEach((rider) => {
+    // Step 1: Filter online riders
+    const onlineRiders = allRiders.filter(rider => rider.status === 'online');
+    if (onlineRiders.length === 0) {
+      return res.status(404).json({ message: "No online riders available" });
+    }
+
+    // Step 2: Find the nearest online rider
+    onlineRiders.forEach((rider) => {
       if (!rider.latitude || !rider.longitude) return;
+
       const riderLat = parseFloat(rider.latitude);
       const riderLon = parseFloat(rider.longitude);
       const distance = calculateDistance([riderLon, riderLat], [userLon, userLat]);
+
       if (distance < minDistance) {
         minDistance = distance;
         nearestRider = rider;
       }
     });
-
-    // Override delivery charge if you want to calculate dynamically
-    // If you want to trust cart.deliveryCharge, comment below line
-    // const deliveryChargeDynamic = nearestRider ? calculateDeliveryCharge(minDistance) : 0;
 
     // Payment Handling
     let paymentStatus = "Pending";
@@ -990,9 +1006,7 @@ export const createBookingFromCart = async (req, res) => {
 
     if (paymentMethod !== "Cash on Delivery") {
       if (!transactionId) {
-        return res.status(400).json({
-          message: "Transaction ID is required for online payments",
-        });
+        return res.status(400).json({ message: "Transaction ID is required for online payments" });
       }
 
       try {
@@ -1028,17 +1042,19 @@ export const createBookingFromCart = async (req, res) => {
       subTotal,
       platformFee,
       deliveryCharge,
-      totalAmount,
+      totalAmount: totalPayable,
       notes: notes || "",
       voiceNoteUrl: voiceNoteUrl || "",
       paymentMethod,
       transactionId: transactionId || null,
       paymentStatus,
       status: "Pending",
-      statusTimeline: [
-        { status: "Pending", message: "Order placed", timestamp: new Date() },
-      ],
-      assignedRider: nearestRider?._id || null,
+      statusTimeline: [{
+        status: "Pending",
+        message: "Order placed",
+        timestamp: new Date(),
+      }],
+      assignedRider: nearestRider ? nearestRider._id : null,
       assignedRiderStatus: nearestRider ? "Assigned" : null,
       razorpayOrder: verifiedPaymentDetails || null,
     });
@@ -1065,7 +1081,6 @@ export const createBookingFromCart = async (req, res) => {
           subTotal,
           platformFee,
           deliveryCharge,
-          totalAmount,
           notes: notes || "",
           voiceNoteUrl: voiceNoteUrl || "",
           paymentMethod,
@@ -1078,7 +1093,7 @@ export const createBookingFromCart = async (req, res) => {
       await nearestRider.save();
     }
 
-    // Save order and clear cart only after success
+    // Save order and clear cart
     await newOrder.save();
 
     cart.items = [];
@@ -1086,19 +1101,21 @@ export const createBookingFromCart = async (req, res) => {
     cart.platformFee = 0;
     cart.deliveryCharge = 0;
     cart.totalPayable = 0;
+
     await cart.save();
 
+    // Send notification to user
     await Notification.create({
       type: "Order",
       referenceId: newOrder._id,
-      message: `New order placed by ${user.name}`,
-      status: "Pending",
+      message: `New order placed by ${user.name}, status: "Pending"`,
     });
 
     return res.status(201).json({
       message: "Order placed successfully",
       order: newOrder,
     });
+
   } catch (error) {
     console.error("Error in booking:", error);
     return res.status(500).json({ message: "Server Error", error: error.message });
@@ -1871,6 +1888,8 @@ export const createPeriodicOrders = async (req, res) => {
 
 
 
+
+
 export const getUserPeriodicOrders = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1880,38 +1899,67 @@ export const getUserPeriodicOrders = async (req, res) => {
       return res.status(400).json({ message: "Invalid user ID" });
     }
 
-    // Check if user exists (optional, but good to have)
+    // Check if user exists
     const userExists = await User.findById(userId);
     if (!userExists) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const orders = await Order.find({ userId })
-      .populate("assignedRider", "name phone")
-      .sort({ deliveryDate: -1 });
+    // Fetch only orders with planType (non-null and non-empty)
+    const orders = await Order.find({ 
+      userId, 
+      planType: { $exists: true, $ne: null, $ne: "" }  // filter for planType that exists and not empty string
+    })
+    .populate("assignedRider", "name phone")
+    .sort({ deliveryDate: -1 });
+
+    const ordersWithMedicineImages = await Promise.all(
+      orders.map(async (order) => {
+        const orderItemsWithImages = await Promise.all(
+          order.orderItems.map(async (item) => {
+            const medicine = await Medicine.findById(item.medicineId);
+
+            const medicineImage = medicine && medicine.images && medicine.images[0]
+              ? medicine.images[0]
+              : "/default-image.jpg";
+
+            return {
+              ...item.toObject(),
+              image: medicineImage,
+            };
+          })
+        );
+
+        const deliveryDate = new Date(order.deliveryDate);
+        let formattedDeliveryDate = "Invalid Date";
+
+        if (!isNaN(deliveryDate.getTime())) {
+          formattedDeliveryDate = format(deliveryDate, "yyyy-MM-dd");
+        }
+
+        return {
+          ...order.toObject(),
+          orderItems: orderItemsWithImages,
+          deliveryDate: formattedDeliveryDate,
+        };
+      })
+    );
 
     res.status(200).json({
       success: true,
-      count: orders.length,
-      orders: orders.map(order => ({
+      count: ordersWithMedicineImages.length,
+      orders: ordersWithMedicineImages.map(order => ({
         _id: order._id,
         deliveryDate: order.deliveryDate,
         deliveryAddress: order.deliveryAddress,
         orderItems: order.orderItems,
-        subtotal: order.subtotal,
         total: order.total,
-        deliveryCharge: order.deliveryCharge,
-        platformCharge: order.platformCharge,
         planType: order.planType,
         paymentMethod: order.paymentMethod,
         paymentStatus: order.paymentStatus,
         status: order.status,
-        statusTimeline: order.statusTimeline,
         notes: order.notes,
         voiceNoteUrl: order.voiceNoteUrl,
-        assignedRider: order.assignedRider,
-        assignedRiderStatus: order.assignedRiderStatus,
-        createdAt: order.createdAt,
       })),
     });
 
@@ -1920,7 +1968,6 @@ export const getUserPeriodicOrders = async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
-
 
 
 
@@ -1970,13 +2017,11 @@ export const sendPrescriptionToAdmin = async (req, res) => {
 
 
 
-// Send message between Rider and User
 export const sendMessage = async (req, res) => {
   try {
-    const { riderId, userId } = req.params;
+    const { userId, riderId } = req.params;
     const { message, senderType } = req.body;
 
-    // Validate message and sender type
     if (!message || message.trim().length === 0) {
       return res.status(400).json({ success: false, message: "Message must be provided." });
     }
@@ -1985,15 +2030,13 @@ export const sendMessage = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid senderType. Must be 'rider' or 'user'." });
     }
 
-    // Validate that both rider and user exist
-    const rider = await Rider.findById(riderId);
-    const user = await User.findById(userId);
+    const riderExists = await Rider.exists({ _id: riderId });
+    const userExists = await User.exists({ _id: userId });
 
-    if (!rider || !user) {
+    if (!riderExists || !userExists) {
       return res.status(404).json({ success: false, message: "Rider or User not found." });
     }
 
-    // Create and save new chat message
     const newMessage = new Chat({
       riderId,
       userId,
@@ -2004,12 +2047,13 @@ export const sendMessage = async (req, res) => {
 
     const savedMessage = await newMessage.save();
 
-    // Emit message to the connected room
+    // Emit message to Socket.IO room
     const roomId = `${riderId}_${userId}`;
     const io = req.app.get("io");
 
     if (io) {
       io.to(roomId).emit('receiveMessage', savedMessage);
+      console.log(`📤 Message emitted to room: ${roomId} from API`);
     }
 
     res.status(201).json({
@@ -2027,27 +2071,28 @@ export const sendMessage = async (req, res) => {
   }
 };
 
-// Get chat history between Rider and User
 export const getChatHistory = async (req, res) => {
   try {
     const { riderId, userId } = req.params;
 
-    // Validate MongoDB ObjectIds
-    if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(userId)) {
+    if (!riderId || !userId) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid riderId or userId.',
+        message: 'riderId and userId are required.',
       });
     }
 
-    const riderObjectId = new mongoose.Types.ObjectId(riderId);
-    const userObjectId = new mongoose.Types.ObjectId(userId);
+    const riderExists = await Rider.exists({ _id: riderId });
+    const userExists = await User.exists({ _id: userId });
 
-    // Fetch all messages between Rider and User
+    if (!riderExists || !userExists) {
+      return res.status(404).json({ success: false, message: "Rider or User not found." });
+    }
+
     const messages = await Chat.find({
       $or: [
-        { riderId: riderObjectId, userId: userObjectId },
-        { riderId: userObjectId, userId: riderObjectId },
+        { riderId: riderId, userId: userId },
+        { riderId: userId, userId: riderId },
       ],
     }).sort({ timestamp: 1 });
 
@@ -2058,10 +2103,9 @@ export const getChatHistory = async (req, res) => {
       });
     }
 
-    // Fetch names for mapping
     const [rider, user] = await Promise.all([
-      Rider.findById(riderId),
-      User.findById(userId)
+      Rider.findOne({ _id: riderId }, { name: 1 }).lean(),
+      User.findOne({ _id: userId }, { name: 1 }).lean(),
     ]);
 
     if (!rider || !user) {
@@ -2071,18 +2115,26 @@ export const getChatHistory = async (req, res) => {
       });
     }
 
-    // Format and return messages
     const formattedMessages = messages.map((message) => {
-      const isSenderRider = String(message.riderId) === String(riderId);
-      const isReceiverRider = String(message.userId) === String(riderId);
+      const senderName = message.senderType === 'rider' ? rider.name : user.name;
+      const receiverName = message.senderType === 'rider' ? user.name : rider.name;
 
       return {
         ...message.toObject(),
         timestamp: message.timestamp.toISOString(),
-        sender: isSenderRider ? rider.name : user.name,
-        receiver: isReceiverRider ? rider.name : user.name,
+        sender: senderName,
+        receiver: receiverName,
       };
     });
+
+    // Emit chat history to Socket.IO room
+    const roomId = `${riderId}_${userId}`;
+    const io = req.app.get("io");
+
+    if (io) {
+      io.to(roomId).emit('chatHistory', formattedMessages);
+      console.log(`📤 Chat history emitted to room: ${roomId} from API`);
+    }
 
     return res.status(200).json({
       success: true,
@@ -2095,6 +2147,81 @@ export const getChatHistory = async (req, res) => {
       success: false,
       message: 'Error fetching chat history',
       error: error.message,
+    });
+  }
+};
+
+
+
+
+
+export const generateAndUploadInvoice = async (req, res) => {
+  try {
+    const { userId, orderId } = req.params;
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid user ID or order ID" });
+    }
+
+    // Fetch order with all necessary data
+    const order = await Order.findOne({ _id: orderId, userId })
+      .populate({
+        path: "userId",
+        select: "name mobile email profileImage"
+      })
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name price images description categoryName pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name location"
+        }
+      })
+      .populate({
+        path: "assignedRider",
+        select: "name phone email latitude longitude profileImage"
+      });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found for this user" });
+    }
+
+    // Prepare plain JSON invoice data
+    const invoiceData = {
+      orderId: order._id,
+      orderDate: order.createdAt,
+      paymentStatus: order.paymentStatus,
+      customer: {
+        name: order.userId.name,
+        email: order.userId.email,
+        phone: order.userId.mobile,
+        profileImage: order.userId.profileImage || null,
+      },
+      rider: order.assignedRider || null,
+      orderItems: order.orderItems.map(item => ({
+        medicineName: item.medicineId?.name || "Unknown",
+        quantity: item.quantity,
+        price: item.price,
+        pharmacy: item.medicineId?.pharmacyId?.name || null,
+        pharmacyLocation: item.medicineId?.pharmacyId?.location || null,
+      })),
+      subTotal: order.subTotal,
+      platformFee: order.platformFee,
+      deliveryCharge: order.deliveryCharge,
+      totalAmount: order.totalAmount,
+    };
+
+    return res.status(200).json({
+      message: "Invoice data fetched successfully",
+      invoice: invoiceData,
+    });
+
+  } catch (error) {
+    console.error("❌ Error fetching invoice data:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
     });
   }
 };

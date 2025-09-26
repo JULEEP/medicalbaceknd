@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import Prescription from '../Models/Prescription.js';
 import { Notification } from '../Models/Notification.js';
+import Order from '../Models/Order.js';
 
 dotenv.config();
 
@@ -342,17 +343,72 @@ export const deletePharmacy = async (req, res) => {
 };
 
 
-// 📦 Get All Pharmacies
+// 📦 Get All Pharmacies with Monthly Revenue
+// 📦 Get All Pharmacies with Monthly Revenue and Payment Status
 export const getAllPharmacies = async (req, res) => {
   try {
-    const pharmacies = await Pharmacy.find();
+    const pharmacies = await Pharmacy.find().lean();
+    const orders = await Order.find({ status: 'Delivered' }).lean();
+    const medicines = await Medicine.find().lean();
+
+    // Map for fast lookup
+    const medicineMap = {};
+    for (const med of medicines) {
+      medicineMap[med._id.toString()] = med;
+    }
+
+    // Revenue map: { pharmacyId: { 'YYYY-MM': amount } }
+    const revenueMap = {};
+
+    for (const order of orders) {
+      const orderMonth = new Date(order.createdAt).toISOString().slice(0, 7); // "YYYY-MM"
+
+      for (const item of order.orderItems) {
+        const med = medicineMap[item.medicineId.toString()];
+        if (!med || !med.pharmacyId) continue;
+
+        const pharmacyId = med.pharmacyId.toString();
+        const amount = med.price * item.quantity;
+
+        if (!revenueMap[pharmacyId]) {
+          revenueMap[pharmacyId] = {};
+        }
+
+        if (!revenueMap[pharmacyId][orderMonth]) {
+          revenueMap[pharmacyId][orderMonth] = 0;
+        }
+
+        revenueMap[pharmacyId][orderMonth] += amount;
+      }
+    }
+
+    // Merge revenue and payment status into pharmacy list
+    const pharmacyData = pharmacies.map((pharmacy) => {
+      const pharmacyId = pharmacy._id.toString();
+      const monthlyRevenue = revenueMap[pharmacyId] || {};
+      const paymentStatus = pharmacy.paymentStatus || {};
+      const revenueByMonth = {};
+
+      for (const month in monthlyRevenue) {
+        revenueByMonth[month] = {
+          amount: monthlyRevenue[month],
+          status: paymentStatus[month] || 'pending', // default to 'pending'
+        };
+      }
+
+      return {
+        ...pharmacy,
+        revenueByMonth,
+      };
+    });
+
     res.status(200).json({
-      message: 'Pharmacies fetched successfully',
+      message: 'Pharmacies fetched successfully with revenue and status',
       total: pharmacies.length,
-      pharmacies,
+      pharmacies: pharmacyData,
     });
   } catch (error) {
-    console.error('Error fetching pharmacies:', error);
+    console.error('Error fetching pharmacies with revenue:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -889,3 +945,67 @@ export const getMedicinesByPharmacyAndCategory = async (req, res) => {
     return res.status(500).json({ message: "Server error", error: error.message });
   }
 };
+
+
+export const updatePaymentStatus = async (req, res) => {
+  const { pharmacyId } = req.params;
+  const { month, status, amount } = req.body;
+
+  if (!month || !status) {
+    return res.status(400).json({ message: 'Month and status are required' });
+  }
+
+  try {
+    const pharmacy = await Pharmacy.findById(pharmacyId);
+    if (!pharmacy) {
+      return res.status(404).json({ message: 'Pharmacy not found' });
+    }
+
+    // Initialize paymentStatus and revenueByMonth objects if undefined
+    if (!pharmacy.paymentStatus) pharmacy.paymentStatus = {};
+    if (!pharmacy.revenueByMonth) pharmacy.revenueByMonth = {};
+
+    // Update status for the month
+    pharmacy.paymentStatus[month] = status;
+
+    // Update amount for the month (optional)
+    if (amount !== undefined) {
+      // If revenueByMonth[month] exists, update amount, else create object with amount
+      pharmacy.revenueByMonth[month] = { amount };
+    }
+
+    await pharmacy.save();
+
+    return res.json({
+      message: 'Payment status and amount updated',
+      month,
+      status,
+      amount: amount !== undefined ? amount : pharmacy.revenueByMonth[month]?.amount,
+    });
+  } catch (error) {
+    console.error('Error updating payment status:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+
+// Get pharmacy by id
+export const getPharmacyById = async (req, res) => {
+  const { pharmacyId } = req.params;
+
+  try {
+    const pharmacy = await Pharmacy.findById(pharmacyId);
+    if (!pharmacy) {
+      return res.status(404).json({ message: 'Pharmacy not found' });
+    }
+
+    return res.json(pharmacy);
+  } catch (error) {
+    console.error('Error fetching pharmacy:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+
+
+

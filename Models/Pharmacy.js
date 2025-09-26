@@ -69,6 +69,18 @@ categories: [
       accountHolderName: { type: String, }, // Add the account holder name
     },
   ],
+
+   // revenueByMonth as simple object, keys are months, values are amounts (Number)
+  revenueByMonth: {
+    type: Object,
+    default: {},
+  },
+
+  // paymentStatus as simple object, keys are months, values are status strings
+  paymentStatus: {
+    type: Object,
+    default: {},
+  },
 }, { timestamps: true });
 
 // Add 2dsphere index for location

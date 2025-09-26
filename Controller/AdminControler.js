@@ -632,6 +632,7 @@ export const updateRider = async (req, res) => {
       latitude,
       longitude,
       deliveryCharge,
+      drivingLicenseStatus,
       status, // New status field to update
     } = req.body;
 
@@ -649,6 +650,7 @@ export const updateRider = async (req, res) => {
     rider.city = city || rider.city;
     rider.state = state || rider.state;
     rider.pinCode = pinCode || rider.pinCode;
+    rider.drivingLicenseStatus = drivingLicenseStatus || rider.drivingLicenseStatus,
     rider.latitude = latitude ? parseFloat(latitude) : rider.latitude;
     rider.longitude = longitude ? parseFloat(longitude) : rider.longitude;
     rider.deliveryCharge = deliveryCharge ? parseFloat(deliveryCharge) : rider.deliveryCharge;
@@ -755,6 +757,7 @@ export const getAllRiders = async (req, res) => {
           state: rider.state,
           pinCode: rider.pinCode,
           status: rider.status,
+          drivingLicenseStatus: rider.drivingLicenseStatus,
           drivingLicense: rider.drivingLicense,
           accountDetails: rider.accountDetails || [],
           createdAt: rider.createdAt,
@@ -1635,3 +1638,104 @@ export const deleteRiderQuery = async (req, res) => {
   }
 };
 
+
+
+export const getAllPreodicOrders = async (req, res) => {
+  try {
+    // Fetch only orders with planType defined (not null)
+    const orders = await Order.find({ planType: { $exists: true, $ne: null } })
+      .populate('assignedRider', 'name phone')  // Populate assigned rider info
+      .populate('userId', 'name mobile')  // Populate user info (name, mobile)
+      .sort({ deliveryDate: -1 });  // Sort by deliveryDate descending
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No periodic orders found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      count: orders.length,
+      orders: orders.map(order => ({
+        _id: order._id,
+        userId: {
+          _id: order.userId._id,
+          name: order.userId.name,
+          mobile: order.userId.mobile,
+        },
+        deliveryDate: order.deliveryDate,
+        deliveryAddress: order.deliveryAddress,
+        orderItems: order.orderItems,
+        subtotal: order.subtotal,
+        total: order.total,
+        deliveryCharge: order.deliveryCharge,
+        platformCharge: order.platformCharge,
+        planType: order.planType,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        status: order.status,
+        statusTimeline: order.statusTimeline,
+        notes: order.notes,
+        voiceNoteUrl: order.voiceNoteUrl,
+        assignedRider: order.assignedRider ? {
+          _id: order.assignedRider._id,
+          name: order.assignedRider.name,
+          phone: order.assignedRider.phone,
+        } : null,
+        assignedRiderStatus: order.assignedRiderStatus,
+        createdAt: order.createdAt,
+      })),
+    });
+
+  } catch (error) {
+    console.error("Error fetching periodic orders:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+
+// Update Order Controller
+export const updatePeriodicOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const updateData = req.body;
+
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    Object.assign(order, updateData);
+    await order.save();
+
+    res.status(200).json({
+      message: "Order updated successfully",
+      order,
+    });
+  } catch (error) {
+    console.error("Error updating the order:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// Delete Order Controller
+export const deletePeriodicOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findByIdAndDelete(orderId);
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    res.status(200).json({
+      message: "Order deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting the order:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};

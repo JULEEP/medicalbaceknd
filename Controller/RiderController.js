@@ -6,11 +6,11 @@ import moment from 'moment'; // Optional, but helpful
 import withdrawalRequestModel from "../Models/withdrawalRequestModel.js";
 import cloudinary from '../config/cloudinary.js';
 import Query from "../Models/Query.js";
+import User from "../Models/User.js";
 
 
 
 
-// Rider Signup with Driving License Upload
 export const signupRider = async (req, res) => {
   try {
     const { name, email, phone, password } = req.body;
@@ -26,6 +26,7 @@ export const signupRider = async (req, res) => {
     }
 
     let drivingLicenseUrl = "";
+    let drivingLicenseStatus = "Pending";  // Default status for new riders
 
     // 📂 Case 1: File uploaded
     if (req.files && req.files.drivingLicense) {
@@ -49,6 +50,7 @@ export const signupRider = async (req, res) => {
       phone,
       password,
       drivingLicense: drivingLicenseUrl,
+      drivingLicenseStatus, // Set status to "Pending" by default
     });
 
     await newRider.save();
@@ -79,6 +81,11 @@ export const loginRider = async (req, res) => {
 
     if (!rider) {
       return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // Check if driving license status is "Approved"
+    if (rider.drivingLicenseStatus !== "Approved") {
+      return res.status(403).json({ message: "Your driving license is not approved yet. Please wait for approval." });
     }
 
     // Simple password match
@@ -465,10 +472,11 @@ export const getAcceptedOrdersForRiderController = async (req, res) => {
       return res.status(400).json({ message: "Invalid rider ID" });
     }
 
-    // Fetch accepted orders
-    const acceptedOrders = await Order.find({
+    // Fetch the first accepted order that is not delivered
+    const acceptedOrder = await Order.findOne({
       assignedRider: riderId,
-      assignedRiderStatus: 'Accepted'
+      assignedRiderStatus: 'Accepted',
+      status: { $ne: 'Delivered' } // Only fetch orders that are not delivered yet
     })
       .populate({
         path: 'orderItems.medicineId',
@@ -484,8 +492,8 @@ export const getAcceptedOrdersForRiderController = async (req, res) => {
       })
       .lean();
 
-    if (!acceptedOrders || acceptedOrders.length === 0) {
-      return res.status(404).json({ message: 'No accepted orders for you yet.' });
+    if (!acceptedOrder) {
+      return res.status(404).json({ message: 'No accepted orders available for you at the moment.' });
     }
 
     // Fetch rider details
@@ -497,47 +505,47 @@ export const getAcceptedOrdersForRiderController = async (req, res) => {
     const riderLat = parseFloat(rider.latitude);
     const riderLon = parseFloat(rider.longitude);
 
-    // Process each accepted order
-    const updatedOrders = acceptedOrders.map(order => {
-      const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
-      const userLocation = order.userId?.location?.coordinates;
+    // Process the accepted order
+    const order = acceptedOrder;
+    const pharmacy = order.orderItems[0]?.medicineId?.pharmacyId;
+    const userLocation = order.userId?.location?.coordinates;
 
-      const pharmacyLat = parseFloat(pharmacy?.latitude);
-      const pharmacyLon = parseFloat(pharmacy?.longitude);
-      const userLat = userLocation?.[1];
-      const userLon = userLocation?.[0];
+    const pharmacyLat = parseFloat(pharmacy?.latitude);
+    const pharmacyLon = parseFloat(pharmacy?.longitude);
+    const userLat = userLocation?.[1];
+    const userLon = userLocation?.[0];
 
-      // Calculate distances
-      const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacyLon, pharmacyLat]);
-      const dropDistance = calculateDistance([pharmacyLon, pharmacyLat], [userLon, userLat]);
+    // Calculate distances
+    const pickupDistance = calculateDistance([riderLon, riderLat], [pharmacyLon, pharmacyLat]);
+    const dropDistance = calculateDistance([pharmacyLon, pharmacyLat], [userLon, userLat]);
 
-      // Time estimates
-      const pickupMinutes = calculateTime(pickupDistance);
-      const dropMinutes = calculateTime(dropDistance);
+    // Time estimates
+    const pickupMinutes = calculateTime(pickupDistance);
+    const dropMinutes = calculateTime(dropDistance);
 
-      const pickupTimeEstimate = addMinutesToTime(order.createdAt, pickupMinutes);
-      const dropTimeEstimate = addMinutesToTime(order.createdAt, pickupMinutes + dropMinutes);
+    const pickupTimeEstimate = addMinutesToTime(order.createdAt, pickupMinutes);
+    const dropTimeEstimate = addMinutesToTime(order.createdAt, pickupMinutes + dropMinutes);
 
-      const formattedPickupTime = formatTimeTo12Hour(pickupTimeEstimate);
-      const formattedDropTime = formatTimeTo12Hour(dropTimeEstimate);
+    const formattedPickupTime = formatTimeTo12Hour(pickupTimeEstimate);
+    const formattedDropTime = formatTimeTo12Hour(dropTimeEstimate);
 
-      // Add all the necessary data to the order response
-      return {
-        order,
-        formattedPickupDistance: pickupDistance.toFixed(2),
-        formattedDropDistance: dropDistance.toFixed(2),
-        pickupTime: formattedPickupTime,
-        dropTime: formattedDropTime
-      };
-    });
+    // Add all the necessary data to the order response
+    const orderResponse = {
+      order,
+      formattedPickupDistance: pickupDistance.toFixed(2),
+      formattedDropDistance: dropDistance.toFixed(2),
+      pickupTime: formattedPickupTime,
+      dropTime: formattedDropTime
+    };
 
-    return res.status(200).json({ acceptedOrders: updatedOrders });
+    // Return the current active order
+    return res.status(200).json({ acceptedOrder: orderResponse });
+
   } catch (error) {
     console.error("Error fetching accepted orders for rider:", error);
     return res.status(500).json({ message: "Server error while fetching accepted orders." });
   }
 };
-
 
 
 
@@ -638,35 +646,124 @@ export const getPickedUpOrdersForRiderController = async (req, res) => {
 
 
 
-// Controller to update assignedRiderStatus for the rider
 export const updateRiderStatusController = async (req, res) => {
   try {
-    const { riderId } = req.params;  // Rider ID passed through params
-    const { orderId, newStatus } = req.body;   // Order ID and newStatus from the request body
+    const { riderId } = req.params;
+    const { orderId, newStatus } = req.body;
 
-    // Find the order
     const order = await Order.findById(orderId);
 
     if (!order) {
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    // Check if the rider is the assigned one
     if (!order.assignedRider || order.assignedRider.toString() !== riderId) {
       return res.status(403).json({ message: 'This order is not assigned to you' });
     }
 
-    // Update assigned rider status
-    order.assignedRiderStatus = newStatus;
+    // ✅ If rejected
+    if (newStatus === 'Rejected') {
+      // 1. Add current rider to rejectedRiders array
+      if (!order.rejectedRiders) order.rejectedRiders = [];
+      if (!order.rejectedRiders.includes(riderId)) {
+        order.rejectedRiders.push(riderId);
+      }
 
-    // Push to statusTimeline
+      // 2. Mark order status as rejected
+      order.assignedRiderStatus = 'Rejected';
+      order.status = 'Rejected';
+      order.statusTimeline.push({
+        status: "Rejected",
+        message: `Rider ${riderId} rejected the order`,
+        timestamp: new Date(),
+      });
+
+      await order.save();
+
+      // 3. Send confirmation response first
+      res.status(200).json({ message: "Order rejected. Will try to reassign shortly." });
+
+      // 4. Reassign after delay (e.g., 10 seconds)
+      setTimeout(async () => {
+        try {
+          const allRiders = await Rider.find({ status: 'online' });
+
+          if (!allRiders || allRiders.length === 0) {
+            console.log("No riders online for reassignment.");
+            return;
+          }
+
+          // Get user location
+          const user = await User.findById(order.userId);
+          const userLat = user.location?.coordinates[1] || 0;
+          const userLon = user.location?.coordinates[0] || 0;
+
+          let nearestRider = null;
+          let minDistance = Infinity;
+
+          allRiders.forEach((rider) => {
+            if (
+              !rider.latitude || !rider.longitude ||
+              order.rejectedRiders.includes(rider._id.toString())
+            ) return;
+
+            const riderLat = parseFloat(rider.latitude);
+            const riderLon = parseFloat(rider.longitude);
+            const distance = calculateDistance([riderLon, riderLat], [userLon, userLat]);
+
+            if (distance < minDistance) {
+              minDistance = distance;
+              nearestRider = rider;
+            }
+          });
+
+          if (nearestRider) {
+            // Reassign order
+            order.assignedRider = nearestRider._id;
+            order.assignedRiderStatus = 'Assigned';
+            order.status = 'Assigned';
+            order.statusTimeline.push({
+              status: "Reassigned",
+              message: `Order reassigned to ${nearestRider.name} after rejection`,
+              timestamp: new Date(),
+            });
+
+            // Notify riders
+            const prevRider = await Rider.findById(riderId);
+            if (prevRider) {
+              prevRider.notifications.push({
+                message: `You rejected order ${orderId}. It was reassigned.`,
+              });
+              await prevRider.save();
+            }
+
+            nearestRider.notifications.push({
+              message: `New order assigned to you from ${user.name}`,
+            });
+            await nearestRider.save();
+
+            await order.save();
+            console.log(`Order ${orderId} reassigned to ${nearestRider.name}`);
+          } else {
+            console.log("No eligible rider found to reassign the order.");
+          }
+        } catch (e) {
+          console.error("Error during reassignment:", e);
+        }
+      }, 10 * 1000); // 10 seconds delay
+
+      return; // Already sent response above
+    }
+
+    // ✅ If not rejected: just update status
+    order.assignedRiderStatus = newStatus;
+    order.status = newStatus;
     order.statusTimeline.push({
       status: newStatus,
       message: `Rider updated status to ${newStatus}`,
       timestamp: new Date(),
     });
 
-    // Save the updated order
     await order.save();
 
     return res.status(200).json({ message: `Order status updated to ${newStatus}` });
@@ -675,6 +772,7 @@ export const updateRiderStatusController = async (req, res) => {
     return res.status(500).json({ message: 'Server error while updating rider status' });
   }
 };
+
 
 
 
@@ -1188,6 +1286,13 @@ export const markOrderAsDeliveredController = async (req, res) => {
     order.paymentStatus = "Completed";
     order.assignedRiderStatus = "Completed";
 
+    // ✅ Push to statusTimeline
+    order.statusTimeline.push({
+      status: "Delivered",
+      message: `Order delivered by rider ${rider.name || riderId}`,
+      timestamp: new Date(),
+    });
+
     // ✅ Update Rider Wallet + Push Transaction
     rider.wallet += deliveryCharge;
     rider.walletTransactions.push({
@@ -1375,30 +1480,35 @@ export const updateRiderStatus = async (req, res) => {
 
 
 
-// ✅ Get Rider Orders by Status
 export const getRiderOrdersByStatus = async (req, res) => {
   try {
     const { riderId } = req.params;
-    const { status } = req.query; // query se status aayega
+    const { status } = req.query; // Query parameter for status
 
     // Validate riderId
     if (!mongoose.Types.ObjectId.isValid(riderId)) {
       return res.status(400).json({ message: "Invalid rider ID" });
     }
 
-    // Check rider exist karta hai ya nahi
+    // Check if rider exists
     const rider = await Rider.findById(riderId);
     if (!rider) {
       return res.status(404).json({ message: "Rider not found" });
     }
 
-    // Query filter
-    const query = { assignedRider: riderId };
+    // Query filter to exclude orders with "Rejected" status in both order and rider status
+    const query = {
+      assignedRider: riderId,
+      assignedRiderStatus: { $ne: "Rejected" },  // Exclude "Rejected" rider status
+      status: { $ne: "Rejected" }  // Exclude "Rejected" order status
+    };
+
+    // If status is provided, include it in the query filter
     if (status) {
-      query.status = status; // agar query me status hai to filter karo
+      query.status = status; // filter by order status if provided
     }
 
-    // Orders fetch with populate
+    // Fetch orders with populate and exclude "Rejected" ones
     const orders = await Order.find(query)
       .populate({
         path: "orderItems.medicineId",

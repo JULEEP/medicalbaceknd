@@ -34,6 +34,7 @@ import {
      getUserPeriodicOrders,
      sendMessage,
      getChatHistory,
+     generateAndUploadInvoice,
     } from '../Controller/UserController.js'; // Import UserController
 const router = express.Router();
 
@@ -82,7 +83,7 @@ router.post("/sendprescription/:userId/:pharmacyId", sendPrescriptionToAdmin);
 router.get("/preodicorders/:userId", getUserPeriodicOrders);
 router.post('/sendMessage/:userId/:riderId', sendMessage);
 router.get('/getChatHistory/:userId/:riderId', getChatHistory);
-
+router.get('/generate-invoice/:userId/:orderId', generateAndUploadInvoice);
 
 
 

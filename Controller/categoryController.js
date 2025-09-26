@@ -19,10 +19,6 @@ export const createCategory = async (req, res) => {
   try {
     const { categoryName, image, serviceName } = req.body;
 
-    if (!categoryName || !serviceName) {
-      return res.status(400).json({ message: 'categoryName and serviceName are required' });
-    }
-
     let imageUrl = '';
 
     if (req.files && req.files.image) {

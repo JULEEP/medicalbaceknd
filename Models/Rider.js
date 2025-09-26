@@ -16,6 +16,11 @@ const riderSchema = new mongoose.Schema(
     deliveryCharge: { type: Number, default: 0 },
     password: { type: String }, // ✅ password field
     drivingLicense: { type: String, default: null }, // ✅ new field added
+     drivingLicenseStatus: {
+      type: String,
+      enum: ["Pending", "Approved", "Rejected"], // Status options
+      default: "Pending", // Default status is "Pending"
+    },
     accountDetails: [
       {
         accountHolderName: String,

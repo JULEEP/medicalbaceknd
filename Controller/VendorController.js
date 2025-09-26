@@ -508,13 +508,12 @@ function generateDateLabels(startDate, endDate, isToday) {
   return labels;
 }
 
-// Main controller
 export const getVendorDashboard = async (req, res) => {
   try {
     const { vendorId } = req.params;
     const { duration = "7days" } = req.query;
 
-    const pharmacy = await Pharmacy.findById(vendorId);
+    const pharmacy = await Pharmacy.findById(vendorId).lean();
     if (!pharmacy) {
       return res.status(404).json({ message: "Pharmacy not found" });
     }
@@ -563,7 +562,6 @@ export const getVendorDashboard = async (req, res) => {
       status: { $in: ["Pending", "Shipped"] }
     });
 
-    // Duration handling
     const now = new Date();
     let startDate;
 
@@ -571,7 +569,7 @@ export const getVendorDashboard = async (req, res) => {
       startDate = new Date(now);
       startDate.setHours(0, 0, 0, 0);
     } else if (duration === "7days") {
-      startDate = subtractDays(now, 6); // include today
+      startDate = subtractDays(now, 6);
     } else if (duration === "1month" || duration === "month") {
       startDate = subtractMonths(now, 1);
     } else if (duration === "3months") {
@@ -588,7 +586,6 @@ export const getVendorDashboard = async (req, res) => {
     const dateFormat = isToday ? "%H:%M" : "%d-%b";
     const dateLabels = generateDateLabels(startDate, now, isToday);
 
-    // Revenue trend aggregation
     const revenueDataRaw = await Order.aggregate([
       {
         $match: {
@@ -626,7 +623,6 @@ export const getVendorDashboard = async (req, res) => {
       revenue: revenueMap[label] || 0
     }));
 
-    // Order trend aggregation
     const orderDataRaw = await Order.aggregate([
       {
         $match: {
@@ -662,7 +658,7 @@ export const getVendorDashboard = async (req, res) => {
       count: orderMap[label] || 0
     }));
 
-    // Final response
+    // ✅ Final response
     return res.status(200).json({
       summary: {
         orders: totalOrders,
@@ -677,7 +673,10 @@ export const getVendorDashboard = async (req, res) => {
       trends: {
         revenueTrend,
         orderTrend
-      }
+      },
+      // ✅ Include revenueByMonth & paymentStatus here
+      revenueByMonth: pharmacy.revenueByMonth || {},
+      paymentStatus: pharmacy.paymentStatus || {}
     });
 
   } catch (error) {

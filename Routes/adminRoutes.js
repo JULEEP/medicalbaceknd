@@ -1,7 +1,7 @@
 // routes/order.routes.js
 
 import express from 'express';
-import { acceptWithdrawalRequest, createAd, createBanner, createRider, deleteAd, deleteBanner, deleteMessage, deleteNotification, deleteOrder, deletePrescriptionForAdmin, deleteQuery, deleteRider, deleteRiderQuery, deleteUser, deleteWithdrawalRequest, getAllAds, getAllBanners, getAllMessages, getAllNotifications, getAllOrders, getAllPayments, getAllPrescriptionsForAdmin, getAllQueries, getAllRiderQueries, getAllRiders, getAllUsers, getAllWithdrawalRequestsController, getDashboardData, getDeliveredOrders, getRefundOrders, getSingleOrder, getSingleUser, loginAdmin, logoutAdmin, registerAdmin, sendMessage, updateAd, updateBanner, updateOrderStatus, updateQueryStatus, updateRider, updateRiderQuery, updateUser, updateUserStatus } from '../Controller/AdminControler.js';
+import { acceptWithdrawalRequest, createAd, createBanner, createRider, deleteAd, deleteBanner, deleteMessage, deleteNotification, deleteOrder, deletePeriodicOrder, deletePrescriptionForAdmin, deleteQuery, deleteRider, deleteRiderQuery, deleteUser, deleteWithdrawalRequest, getAllAds, getAllBanners, getAllMessages, getAllNotifications, getAllOrders, getAllPayments, getAllPreodicOrders, getAllPrescriptionsForAdmin, getAllQueries, getAllRiderQueries, getAllRiders, getAllUsers, getAllWithdrawalRequestsController, getDashboardData, getDeliveredOrders, getRefundOrders, getSingleOrder, getSingleUser, loginAdmin, logoutAdmin, registerAdmin, sendMessage, updateAd, updateBanner, updateOrderStatus, updatePeriodicOrder, updateQueryStatus, updateRider, updateRiderQuery, updateUser, updateUserStatus } from '../Controller/AdminControler.js';
 
 const router = express.Router();
 
@@ -50,7 +50,9 @@ router.delete("/deletemessages/:id", deleteMessage);
 router.get('/riderqueries', getAllRiderQueries);
 router.put('/updatequeries/:queryId', updateRiderQuery); // :queryId in URL params
 router.delete('/deletequeries/:queryId', deleteRiderQuery); // :queryId in URL params
-
+router.get('/allpreodicorders', getAllPreodicOrders);
+router.put('/updatepreodicorders/:orderId', updatePeriodicOrder);
+router.delete('/deletepreodicorders/:orderId', deletePeriodicOrder);
 
 
 
