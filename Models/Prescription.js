@@ -16,6 +16,7 @@ const prescriptionSchema = new mongoose.Schema({
     type: String,
     default: "",
   },
+    status: { type: String, default: "Pending" },  // Add status field
 }, { timestamps: true });
 
 export default mongoose.model("Prescription", prescriptionSchema);

@@ -81,6 +81,40 @@ categories: [
     type: Object,
     default: {},
   },
+
+   // New paymentHistory field added here
+  paymentHistory: [
+    {
+      month: {
+        type: String,
+      },
+      status: {
+        type: String,
+      },
+      amount: {
+        type: Number,
+        default: 0,
+      },
+      date: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+
+
+
+    // **Notifications** (Added directly as an embedded array)
+  notifications: [
+    {
+      orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', },
+      status: { type: String},
+      message: { type: String,},
+      timestamp: { type: Date, default: Date.now },
+      read: { type: Boolean, default: false },
+    },
+  ],
+
 }, { timestamps: true });
 
 // Add 2dsphere index for location

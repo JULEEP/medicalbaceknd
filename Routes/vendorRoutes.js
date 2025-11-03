@@ -1,5 +1,6 @@
 import express from 'express';
-import { addBankDetails, addPharmacyByVendorId, createMedicine, deleteMedicineByVendor, editBankDetails, editMedicineByVendor, getAllMedicinesByVendor, getAllOrdersByVendor, getCategoriesByVendorId, getMessagesForVendor, getPrescriptionsForVendor, getVendorDashboard, getVendorProfile, updateOrderStatusByVendor, updateVendorProfile, updateVendorStatus, vendorLogin, vendorLogout } from '../Controller/VendorController.js'
+import { addBankDetails, addPharmacyByVendorId, createMedicine, createOrderFromPrescription, createVendorQuery, deleteMedicineByVendor, deleteNotificationForVendor, editBankDetails, editMedicineByVendor, getAllMedicinesByVendor, getAllNotificationsForVendor, getAllOrdersByVendor, getAllPeriodicOrdersByVendor, getCategoriesByVendorId, getDeliveredOrdersByVendor, getMessagesForVendor, getPendingOrdersByVendor, getPrescriptionOrdersByVendor, getPrescriptionsForVendor, getVendorDashboard, getVendorProfile, getVendorQueries, updateOrderStatusByVendor, updatePrescriptionStatus, updateVendorProfile, updateVendorStatus, vendorLogin, vendorLogout } from '../Controller/VendorController.js'
+import { getAllPreodicOrders } from '../Controller/AdminControler.js';
 
 const router = express.Router();
 
@@ -22,5 +23,17 @@ router.put('/updatestatus/:vendorId', updateVendorStatus);
 router.post('/addbankdetails/:vendorId', addBankDetails);
 router.put('/editbankdetails/:vendorId/:bankDetailId', editBankDetails);
 router.get("/getprescriptions/:vendorId", getPrescriptionsForVendor);
+router.get('/pendingorders/:vendorId', getPendingOrdersByVendor);
+router.get('/deliveredorders/:vendorId', getDeliveredOrdersByVendor);
+router.post('/createOrderFromPrescription/:vendorId/:userId', createOrderFromPrescription);
+router.patch('/updatePrescriptionStatus/:prescriptionId', updatePrescriptionStatus);
+router.get('/periodicorders/:vendorId', getAllPeriodicOrdersByVendor);
+router.get('/getPrescriptionOrdersByVendor/:vendorId', getPrescriptionOrdersByVendor);
+router.post('/create-query/:vendorId', createVendorQuery);
+router.get('/myqueries/:vendorId', getVendorQueries);
+router.get('/notifications/:vendorId', getAllNotificationsForVendor);
+router.delete("/deletenotification/:vendorId/:notificationId", deleteNotificationForVendor);
+
+
 
 export default router;

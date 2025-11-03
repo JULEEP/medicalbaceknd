@@ -125,6 +125,10 @@ export const createPharmacy = async (req, res) => {
     const vendorId = `CX${newNumber.toString().padStart(6, '0')}`;
     const password = Math.floor(1000 + Math.random() * 9000).toString();
 
+
+
+      // 🔔 Create Notification (Improved Message)
+
     // Create pharmacy
     const newPharmacy = new Pharmacy({
       name,
@@ -147,6 +151,13 @@ export const createPharmacy = async (req, res) => {
       panCardFile: panCardFileUrl,
       license,
       licenseFile: licenseFileUrl
+    });
+
+     await Notification.create({
+      type: "Pharmacy",
+      referenceId: newPharmacy._id,
+      message: `New pharmacy "${newPharmacy.name}" created. Please approve or reject.`,
+      status: "Pending"
     });
 
     await newPharmacy.save();
@@ -199,7 +210,7 @@ export const updatePharmacy = async (req, res) => {
       return res.status(404).json({ message: 'Pharmacy not found' });
     }
 
-    // 🌐 Image upload if new image provided
+    // 🌐 Upload pharmacy image
     let imageUrl = pharmacy.image;
     if (req.files?.image) {
       const uploaded = await cloudinary.uploader.upload(req.files.image.tempFilePath, {
@@ -210,68 +221,47 @@ export const updatePharmacy = async (req, res) => {
       imageUrl = image;
     }
 
-    // 🏷️ Handle categories update (if provided)
-    let parsedCategories = pharmacy.categories;
+    // 🏷️ Merge existing categories with new ones
+    let existingCategories = pharmacy.categories || [];
+    let newCategories = [];
 
     if (categories) {
       let catArray = [];
 
       if (typeof categories === 'string') {
-        catArray = JSON.parse(categories);
+        catArray = JSON.parse(categories); // from stringified JSON
       } else if (Array.isArray(categories)) {
-        catArray = categories;
+        catArray = categories; // already parsed
       }
 
-      if (req.files?.categoryImages) {
-        const categoryFiles = Array.isArray(req.files.categoryImages)
+      const categoryFiles = req.files?.categoryImages
+        ? Array.isArray(req.files.categoryImages)
           ? req.files.categoryImages
-          : [req.files.categoryImages];
+          : [req.files.categoryImages]
+        : [];
 
-        parsedCategories = [];
+      for (let i = 0; i < catArray.length; i++) {
+        let imageUrl = catArray[i].image || '';
 
-        for (let i = 0; i < categoryFiles.length; i++) {
-          const file = categoryFiles[i];
-          const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
+        // Upload image if provided in file
+        if (categoryFiles[i]) {
+          const uploaded = await cloudinary.uploader.upload(categoryFiles[i].tempFilePath, {
             folder: 'pharmacy_categories',
           });
+          imageUrl = uploaded.secure_url;
+        }
 
-          parsedCategories.push({
-            name: catArray[i]?.name || file.name.split('.')[0],
-            image: uploaded.secure_url
+        if (!catArray[i].name || !imageUrl) {
+          return res.status(400).json({
+            message: 'Each new category must have a name and an image',
           });
         }
-      } else {
-        parsedCategories = catArray;
+
+        newCategories.push({
+          name: catArray[i].name,
+          image: imageUrl,
+        });
       }
-
-      if (!parsedCategories.every(cat => cat.name && cat.image)) {
-        return res.status(400).json({ message: 'Each category must have name and image' });
-      }
-    }
-
-    // 📝 Upload Aadhar, PAN Card, License documents if they exist
-    let aadharFileUrl = pharmacy.aadharFile;
-    if (req.files?.aadharFile) {
-      const uploaded = await cloudinary.uploader.upload(req.files.aadharFile.tempFilePath, {
-        folder: 'pharmacy_aadhar_docs',
-      });
-      aadharFileUrl = uploaded.secure_url;
-    }
-
-    let panCardFileUrl = pharmacy.panCardFile;
-    if (req.files?.panCardFile) {
-      const uploaded = await cloudinary.uploader.upload(req.files.panCardFile.tempFilePath, {
-        folder: 'pharmacy_pancard_docs',
-      });
-      panCardFileUrl = uploaded.secure_url;
-    }
-
-    let licenseFileUrl = pharmacy.licenseFile;
-    if (req.files?.licenseFile) {
-      const uploaded = await cloudinary.uploader.upload(req.files.licenseFile.tempFilePath, {
-        folder: 'pharmacy_license_docs',
-      });
-      licenseFileUrl = uploaded.secure_url;
     }
 
     // 🔄 Update fields
@@ -279,7 +269,7 @@ export const updatePharmacy = async (req, res) => {
     pharmacy.image = imageUrl;
     pharmacy.latitude = latitude ? parseFloat(latitude) : pharmacy.latitude;
     pharmacy.longitude = longitude ? parseFloat(longitude) : pharmacy.longitude;
-    pharmacy.categories = parsedCategories;
+    pharmacy.categories = [...existingCategories, ...newCategories]; // ✅ Merge
     pharmacy.vendorName = vendorName || pharmacy.vendorName;
     pharmacy.vendorEmail = vendorEmail || pharmacy.vendorEmail;
     pharmacy.vendorPhone = vendorPhone || pharmacy.vendorPhone;
@@ -287,33 +277,51 @@ export const updatePharmacy = async (req, res) => {
     pharmacy.aadhar = aadhar || pharmacy.aadhar;
     pharmacy.panCard = panCard || pharmacy.panCard;
     pharmacy.license = license || pharmacy.license;
-    pharmacy.aadharFile = aadharFileUrl;
-    pharmacy.panCardFile = panCardFileUrl;
-    pharmacy.licenseFile = licenseFileUrl;
 
-    // 🟢 Add the status update
+    // 📄 Upload documents if any
+    if (req.files?.aadharFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.aadharFile.tempFilePath, {
+        folder: 'pharmacy_aadhar_docs',
+      });
+      pharmacy.aadharFile = uploaded.secure_url;
+    }
+
+    if (req.files?.panCardFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.panCardFile.tempFilePath, {
+        folder: 'pharmacy_pancard_docs',
+      });
+      pharmacy.panCardFile = uploaded.secure_url;
+    }
+
+    if (req.files?.licenseFile) {
+      const uploaded = await cloudinary.uploader.upload(req.files.licenseFile.tempFilePath, {
+        folder: 'pharmacy_license_docs',
+      });
+      pharmacy.licenseFile = uploaded.secure_url;
+    }
+
+    // ✅ Status update
     if (status) {
-      const validStatuses = ['Active', 'Inactive', 'Suspended']; // You can add more valid statuses if needed
+      const validStatuses = ['Active', 'Inactive', 'Suspended'];
       if (!validStatuses.includes(status)) {
         return res.status(400).json({ message: 'Invalid status' });
       }
       pharmacy.status = status;
     }
 
-    // Save updated pharmacy
+    // 💾 Save
     await pharmacy.save();
 
-    // Create notification for updating pharmacy
+    // 🔔 Notification
     await Notification.create({
       type: 'Pharmacy',
       referenceId: pharmacy._id,
-      message: `Pharmacy "${pharmacy.name}" updated`,
+      message: `Pharmacy "${pharmacy.name}" updated with new categories`,
       status: 'Pending',
     });
 
-    // Return updated pharmacy details
     res.status(200).json({
-      message: 'Pharmacy updated successfully',
+      message: 'Pharmacy updated successfully with new categories',
       pharmacy,
     });
 
@@ -322,6 +330,7 @@ export const updatePharmacy = async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
+
 
 
 export const deletePharmacy = async (req, res) => {
@@ -961,18 +970,36 @@ export const updatePaymentStatus = async (req, res) => {
       return res.status(404).json({ message: 'Pharmacy not found' });
     }
 
-    // Initialize paymentStatus and revenueByMonth objects if undefined
+    // Initialize paymentStatus, revenueByMonth, and paymentHistory if they are undefined
     if (!pharmacy.paymentStatus) pharmacy.paymentStatus = {};
     if (!pharmacy.revenueByMonth) pharmacy.revenueByMonth = {};
+    if (!pharmacy.paymentHistory) pharmacy.paymentHistory = [];
+
+    // Check if the status for the given month is already 'paid'
+    if (pharmacy.paymentStatus[month] === 'paid') {
+      return res.status(400).json({
+        message: `Payment for ${month} has already been marked as 'paid'. No further updates allowed for this month.`,
+      });
+    }
 
     // Update status for the month
     pharmacy.paymentStatus[month] = status;
 
-    // Update amount for the month (optional)
-    if (amount !== undefined) {
-      // If revenueByMonth[month] exists, update amount, else create object with amount
-      pharmacy.revenueByMonth[month] = { amount };
+    // Use the amount directly from the request body, don't force to 0 unless explicitly required
+    let finalAmount = amount;
+
+    // If the status is 'paid', record the amount sent
+    if (status === 'paid' && finalAmount !== undefined) {
+      pharmacy.revenueByMonth[month] = { amount: finalAmount };
     }
+
+    // Add the payment history entry
+    pharmacy.paymentHistory.push({
+      month,
+      status,
+      amount: finalAmount, // Use the actual amount passed in the body
+      date: new Date(),    // Current date when the update is made
+    });
 
     await pharmacy.save();
 
@@ -980,13 +1007,70 @@ export const updatePaymentStatus = async (req, res) => {
       message: 'Payment status and amount updated',
       month,
       status,
-      amount: amount !== undefined ? amount : pharmacy.revenueByMonth[month]?.amount,
+      amount: finalAmount, // Return the actual amount sent in the request
     });
   } catch (error) {
     console.error('Error updating payment status:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+
+
+
+// Controller for fetching all pharmacies' payment history
+// Controller for fetching all pharmacies' payment history
+export const getAllPaymentHistory = async (req, res) => {
+  try {
+    // Fetch all pharmacies with their payment history
+    const pharmacies = await Pharmacy.find({})
+      .select('name vendorName vendorId paymentHistory createdAt')
+      .sort({ createdAt: -1 });
+
+    if (!pharmacies || pharmacies.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No pharmacies found",
+      });
+    }
+
+    // Extract and format payment history
+    const paymentHistories = pharmacies.map(pharmacy => {
+      return {
+        pharmacyId: pharmacy._id,
+        pharmacyName: pharmacy.name,
+        vendorName: pharmacy.vendorName,
+        vendorId: pharmacy.vendorId,
+        totalPayments: pharmacy.paymentHistory?.length || 0,
+        paymentHistory: pharmacy.paymentHistory?.length > 0 
+          ? pharmacy.paymentHistory.map(payment => ({
+              month: payment.month,
+              status: payment.status,
+              amount: payment.amount,
+              date: payment.date
+            }))
+          : "No payment history available",
+        createdAt: pharmacy.createdAt
+      };
+    });
+
+    // Return the list of payment histories
+    return res.status(200).json({
+      success: true,
+      count: paymentHistories.length,
+      paymentHistories,
+    });
+  } catch (error) {
+    console.error("Error fetching payment history:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while fetching payment history",
+      error: error.message,
+    });
+  }
+};
+
+
 
 
 // Get pharmacy by id

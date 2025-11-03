@@ -1,5 +1,5 @@
 import express from 'express';
-import { createPharmacy, getAllPharmacies, createPharmacyCategory, getAllPharmacyCategories, createMedicine, getAllMedicines, getSingleMedicine, getPharmacies, getMedicinesByPharmacyAndCategory, updatePharmacy, deletePharmacy, updateMedicine, deleteMedicine, getPrescriptionsForPharmacy, updatePaymentStatus, getPharmacyById } from '../Controller/pharmacyController.js';
+import { createPharmacy, getAllPharmacies, createPharmacyCategory, getAllPharmacyCategories, createMedicine, getAllMedicines, getSingleMedicine, getPharmacies, getMedicinesByPharmacyAndCategory, updatePharmacy, deletePharmacy, updateMedicine, deleteMedicine, getPrescriptionsForPharmacy, updatePaymentStatus, getPharmacyById, getAllPaymentHistory } from '../Controller/pharmacyController.js';
 
 const router = express.Router();
 
@@ -24,7 +24,7 @@ router.delete('/deletepharmacy/:pharmacyId', deletePharmacy);
 router.get("/pharmacyprescriptions/:pharmacyId", getPrescriptionsForPharmacy);
 
 router.put('/updatepayment/:pharmacyId', updatePaymentStatus);
-router.get('/:pharmacyId', getPharmacyById);
+router.get("/paymenthistory", getAllPaymentHistory);
 
 
 

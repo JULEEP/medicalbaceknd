@@ -2,16 +2,14 @@
 import Pharmacy from "../Models/Pharmacy.js";
 import Medicine from '../Models/Medicine.js';
 import cloudinary from '../config/cloudinary.js';
-
-
-
-
-
 import dotenv from 'dotenv';
 import Order from "../Models/Order.js";
 import Message from "../Models/Message.js";
 import Prescription from "../Models/Prescription.js";
 import Query from "../Models/Query.js";
+import Rider from "../Models/Rider.js";
+import User from "../Models/User.js";
+import mongoose from "mongoose";
 
 dotenv.config();
 
@@ -20,6 +18,32 @@ cloudinary.config({
   api_key: process.env.CLOUD_API_KEY,
   api_secret: process.env.CLOUD_API_SECRET,
 });
+
+
+
+/// Utility: Haversine formula to calculate distance in km
+const calculateDistance = (coord1, coord2) => {
+  const toRad = (value) => (value * Math.PI) / 180;
+  const [lon1, lat1] = coord1;
+  const [lon2, lat2] = coord2;
+
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+// Delivery charge calculation per km (adjust rate as needed)
+const calculateDeliveryCharge = (distanceKm) => {
+  const ratePerKm = 5; // 5 currency units per km
+  return Math.ceil(distanceKm * ratePerKm);
+};
+
 
 export const vendorLogin = async (req, res) => {
   try {
@@ -200,7 +224,7 @@ export const getCategoriesByVendorId = async (req, res) => {
 // ➕ Create Medicine
 export const createMedicine = async (req, res) => {
   try {
-    const { name, price, description, categoryName } = req.body;
+    const { name, price, mrp, description, categoryName } = req.body;  // Add 'mrp' to the destructuring
     const { vendorId } = req.params;  // get vendorId from params
 
     // ✅ Check pharmacy exists using vendorId as pharmacyId
@@ -243,6 +267,7 @@ export const createMedicine = async (req, res) => {
       name,
       images,
       price,
+      mrp,  // Add MRP to the new medicine object
       description,
       categoryName,
     });
@@ -259,6 +284,7 @@ export const createMedicine = async (req, res) => {
         name: populated.name,
         images: populated.images,
         price: populated.price,
+        mrp: populated.mrp,  // Include MRP in the response
         description: populated.description,
         categoryName: populated.categoryName,
         pharmacy: populated.pharmacyId,
@@ -300,7 +326,7 @@ export const getAllMedicinesByVendor = async (req, res) => {
 export const editMedicineByVendor = async (req, res) => {
   try {
     const { vendorId, medicineId } = req.params;
-    const { name, price, description, categoryName, images } = req.body;
+    const { name, price, mrp, description, categoryName, images } = req.body; // Include 'mrp' in destructuring
 
     // ✅ Check if pharmacy exists
     const pharmacy = await Pharmacy.findById(vendorId);
@@ -326,8 +352,11 @@ export const editMedicineByVendor = async (req, res) => {
     // 🛠 Update fields
     medicine.name = name || medicine.name;
     medicine.price = price || medicine.price;
+    medicine.mrp = mrp || medicine.mrp;  // Update MRP if provided
     medicine.description = description || medicine.description;
     medicine.categoryName = categoryName || medicine.categoryName;
+
+    // Handle image updates
     if (Array.isArray(images) && images.length > 0) {
       medicine.images = images;
     }
@@ -336,14 +365,21 @@ export const editMedicineByVendor = async (req, res) => {
 
     res.status(200).json({
       message: 'Medicine updated successfully',
-      medicine,
+      medicine: {
+        name: medicine.name,
+        price: medicine.price,
+        mrp: medicine.mrp,  // Include MRP in the response
+        description: medicine.description,
+        categoryName: medicine.categoryName,
+        images: medicine.images,
+        pharmacyId: medicine.pharmacyId
+      },
     });
   } catch (error) {
     console.error('Error updating medicine:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
-
 
 
 // ❌ Delete Medicine by Vendor
@@ -373,29 +409,15 @@ export const getAllOrdersByVendor = async (req, res) => {
   try {
     const { vendorId } = req.params;
 
-    // Step 1: Find all medicines that belong to this vendor
-    const vendorMedicines = await Medicine.find({ pharmacyId: vendorId }, '_id');
-    const medicineIds = vendorMedicines.map(med => med._id);
+    // Find all orders assigned to this vendor pharmacy
+    const orders = await Order.find({ assignedPharmacy: vendorId })
+      .populate("assignedRider")
+      .sort({ createdAt: -1 });
 
-    if (medicineIds.length === 0) {
-      return res.status(200).json({
-        message: 'No orders found for this vendor (no medicines listed).',
-        orders: [],
-      });
-    }
-
-    // Step 2: Find all orders that have these medicine IDs in orderItems
-    const orders = await Order.find({
-      'orderItems.medicineId': { $in: medicineIds },
-    })
-      .populate("assignedRider") // Populate assigned rider details
-      .sort({ createdAt: -1 }); // newest first
-
-    // Step 3: Send response
     return res.status(200).json({
       message: 'Orders fetched successfully',
       orders: orders.map(order => ({
-        ...order.toObject(), // Convert the order to a plain object
+        ...order.toObject(),
         assignedRider: order.assignedRider ? {
           _id: order.assignedRider._id,
           name: order.assignedRider.name,
@@ -419,7 +441,6 @@ export const getAllOrdersByVendor = async (req, res) => {
 
 
 
-// 📦 Update status of a specific order for a vendor
 export const updateOrderStatusByVendor = async (req, res) => {
   try {
     const { vendorId, orderId } = req.params;
@@ -429,30 +450,133 @@ export const updateOrderStatusByVendor = async (req, res) => {
       return res.status(400).json({ message: 'Status is required in the request body.' });
     }
 
-    // Step 1: Find all medicines that belong to this vendor
-    const vendorMedicines = await Medicine.find({ pharmacyId: vendorId }, '_id');
-    const medicineIds = vendorMedicines.map(med => med._id);
-
-    if (medicineIds.length === 0) {
-      return res.status(404).json({
-        message: 'No medicines found for this vendor.',
-      });
-    }
-
-    // Step 2: Find the order by orderId and ensure it contains medicines belonging to this vendor
     const order = await Order.findOne({
       _id: orderId,
-      'orderItems.medicineId': { $in: medicineIds },
-    });
+      assignedPharmacy: vendorId,
+    }).populate("userId");
 
     if (!order) {
       return res.status(404).json({
-        message: 'Order not found for this vendor or order does not contain vendor medicines.',
+        message: 'Order not found or not assigned to this vendor.',
       });
     }
 
-    // Step 3: Update the order status
+    const user = order.userId;
+
+    // Handle rejection
+    if (status === 'Rejected') {
+      if (!order.rejectedPharmacies) order.rejectedPharmacies = [];
+
+      if (!order.rejectedPharmacies.includes(vendorId)) {
+        order.rejectedPharmacies.push(vendorId);
+      }
+
+      order.statusTimeline.push({
+        status: 'Rejected',
+        message: `Vendor ${vendorId} rejected the order.`,
+        timestamp: new Date(),
+      });
+
+      // Clear assignedPharmacy since vendor rejected it
+      order.assignedPharmacy = null;
+
+      await order.save();
+
+      // Schedule reassignment after 5 minutes
+      scheduleReassignOrder(order._id);
+
+      return res.status(200).json({
+        message: 'Order rejected by vendor and will be reassigned if not accepted by another vendor.',
+        order,
+      });
+    }
+
+    // For all other statuses, update status and timeline
     order.status = status;
+    order.statusTimeline.push({
+      status,
+      message: `Vendor updated order status to ${status}`,
+      timestamp: new Date(),
+    });
+
+    // Push notification to user
+    if (user) {
+      user.notifications.push({
+        orderId: order._id,
+        status,
+        message: `Your order status has been updated to "${status}" by the vendor.`,
+        timestamp: new Date(),
+        read: false,
+      });
+      await user.save();
+    }
+
+    // If order accepted, assign nearest rider
+    if (status === "Accepted" && !order.assignedRider) {
+      const allRiders = await Rider.find({ status: 'online' });
+      const rejectedRiders = order.rejectedRiders || [];
+
+      let nearestRider = null;
+      let minDistance = Infinity;
+
+      const userLat = user.location?.coordinates[1] || 0;
+      const userLon = user.location?.coordinates[0] || 0;
+
+      allRiders.forEach((rider) => {
+        if (!rider.latitude || !rider.longitude) return;
+        if (rejectedRiders.includes(rider._id.toString())) return;
+
+        const riderLat = parseFloat(rider.latitude);
+        const riderLon = parseFloat(rider.longitude);
+        const distance = calculateDistance([riderLon, riderLat], [userLon, userLat]);
+
+        if (distance < minDistance) {
+          minDistance = distance;
+          nearestRider = rider;
+        }
+      });
+
+      if (nearestRider) {
+        order.assignedRider = nearestRider._id;
+        order.assignedRiderStatus = "Assigned";
+
+        const baseFare = nearestRider.baseFare || 30;
+        const deliveryCharge = calculateDeliveryCharge(minDistance) + baseFare;
+        order.deliveryCharge = deliveryCharge;
+
+        order.statusTimeline.push({
+          status: "Rider Assigned",
+          message: `Rider ${nearestRider.name} has been assigned with a delivery charge of ${deliveryCharge}.`,
+          timestamp: new Date(),
+        });
+
+        nearestRider.notifications.push({
+          message: `New order assigned to you from ${user.name}.`,
+          order: {
+            _id: order._id,
+            user: {
+              _id: user._id,
+              name: user.name,
+              phone: user.phone,
+            },
+            deliveryAddress: order.deliveryAddress,
+            orderItems: order.orderItems,
+            subTotal: order.subTotal,
+            platformFee: order.platformFee,
+            deliveryCharge: order.deliveryCharge,
+            notes: order.notes || "",
+            voiceNoteUrl: order.voiceNoteUrl || "",
+            paymentMethod: order.paymentMethod,
+            paymentStatus: order.paymentStatus,
+            status: order.status,
+            statusTimeline: order.statusTimeline,
+          },
+        });
+
+        await nearestRider.save();
+      }
+    }
+
     await order.save();
 
     return res.status(200).json({
@@ -465,6 +589,43 @@ export const updateOrderStatusByVendor = async (req, res) => {
   }
 };
 
+
+const scheduleReassignOrder = (orderId) => {
+  setTimeout(async () => {
+    try {
+      const order = await Order.findById(orderId);
+
+      if (!order) return;
+
+      if (order.status === 'Accepted' || order.assignedPharmacy) return;
+
+      const rejectedPharmacies = order.rejectedPharmacies || [];
+      const availablePharmacies = await Pharmacy.find({
+        _id: { $nin: rejectedPharmacies },
+      });
+
+      if (availablePharmacies.length === 0) {
+        console.log('No pharmacies available to reassign the order:', orderId);
+        return;
+      }
+
+      const nextPharmacy = availablePharmacies[0];
+      order.assignedPharmacy = nextPharmacy._id;
+
+      order.statusTimeline.push({
+        status: 'Reassigned',
+        message: `Order reassigned to pharmacy ${nextPharmacy._id} after rejection.`,
+        timestamp: new Date(),
+      });
+
+      await order.save();
+
+      console.log(`Order ${orderId} reassigned to pharmacy ${nextPharmacy._id}`);
+    } catch (error) {
+      console.error('Error in scheduled reassignment:', error);
+    }
+  }, 30 * 1000); // ⏱️ 30 seconds delay
+};
 
 
 // Utility functions
@@ -546,10 +707,11 @@ export const getVendorDashboard = async (req, res) => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
-    const todaysOrders = await Order.countDocuments({
-      "orderItems.medicineId": { $in: medicineIds },
-      createdAt: { $gte: startOfToday }
-    });
+const todaysOrders = await Order.countDocuments({
+  "orderItems.medicineId": { $in: medicineIds },
+  createdAt: { $gte: startOfToday }
+});
+
 
     const ordersDelivered = await Order.countDocuments({
       "orderItems.medicineId": { $in: medicineIds },
@@ -561,6 +723,9 @@ export const getVendorDashboard = async (req, res) => {
       "orderItems.medicineId": { $in: medicineIds },
       status: { $in: ["Pending", "Shipped"] }
     });
+
+
+    
 
     const now = new Date();
     let startDate;
@@ -663,7 +828,8 @@ export const getVendorDashboard = async (req, res) => {
       summary: {
         orders: totalOrders,
         medicinesCount,
-        revenue: totalRevenue
+        revenue: totalRevenue,
+        todaysOrders: todaysOrders  // Add today's orders count here
       },
       today: {
         ordersPlaced: todaysOrders,
@@ -989,7 +1155,12 @@ export const getPrescriptionsForVendor = async (req, res) => {
     // Find all prescriptions where pharmacyId matches the vendorId
     const prescriptions = await Prescription.find({
       pharmacyId: vendorId // We check if the pharmacyId matches the vendorId
-    }).sort({ createdAt: -1 }); // Sort prescriptions by createdAt in descending order
+    })
+      .sort({ createdAt: -1 }) // Sort prescriptions by createdAt in descending order
+      .populate({
+        path: 'userId', // Populate the userId field
+        select: 'name' // Select only the name field from the User model
+      });
 
     if (prescriptions.length === 0) {
       return res.status(404).json({ message: "No prescriptions found for this vendor" });
@@ -997,8 +1168,13 @@ export const getPrescriptionsForVendor = async (req, res) => {
 
     // Clean the prescription data to only include relevant fields
     const cleanPrescriptions = prescriptions.map(prescription => ({
-      userId: prescription.userId, 
+      prescriptionId: prescription._id, // Add Prescription ID
+      userId: prescription.userId ? {
+        userid: prescription.userId._id, // Add userId for reference
+        name: prescription.userId.name || "Unknown" // Safely access user name
+      } : { name: "Unknown" },
       prescriptionUrl: prescription.prescriptionUrl,
+      status: prescription.status,
       createdAt: prescription.createdAt, // Or any other fields you want to include
     }));
 
@@ -1012,5 +1188,532 @@ export const getPrescriptionsForVendor = async (req, res) => {
   } catch (error) {
     console.error("Error in getPrescriptionsForVendor:", error);
     return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+
+
+
+
+
+
+// 📦 Get pending orders for a vendor
+export const getPendingOrdersByVendor = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    // Find orders assigned to this pharmacy AND with status "Pending"
+    const pendingOrders = await Order.find({
+      assignedPharmacy: vendorId,
+      status: 'Pending',
+    })
+      .populate("assignedRider")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      message: 'Pending orders fetched successfully',
+      orders: pendingOrders.map(order => ({
+        ...order.toObject(),
+        assignedRider: order.assignedRider ? {
+          _id: order.assignedRider._id,
+          name: order.assignedRider.name,
+          email: order.assignedRider.email,
+          phone: order.assignedRider.phone,
+          address: order.assignedRider.address,
+          city: order.assignedRider.city,
+          state: order.assignedRider.state,
+          pinCode: order.assignedRider.pinCode,
+          profileImage: order.assignedRider.profileImage,
+          rideImages: order.assignedRider.rideImages,
+          deliveryCharge: order.assignedRider.deliveryCharge,
+        } : null,
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching pending orders for vendor:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+
+
+export const getPrescriptionOrdersByVendor = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    // Step 1: Find all medicines that belong to this vendor
+    const vendorMedicines = await Medicine.find({ pharmacyId: vendorId }, '_id');
+    const medicineIds = vendorMedicines.map(med => med._id);
+
+    if (medicineIds.length === 0) {
+      return res.status(200).json({
+        message: 'No orders found for this vendor (no medicines listed).',
+        orders: [],
+      });
+    }
+
+    // Step 2: Find all orders with these medicine IDs in orderItems, and isPrescriptionOrder: true
+    const orders = await Order.find({
+      'orderItems.medicineId': { $in: medicineIds },
+      isPrescriptionOrder: true,  // Only fetch prescription orders
+    })
+      .populate("assignedRider")  // Populate assigned rider details
+      .populate("userId", "userId name email mobile") // Populate user details: name, email, and phone
+      .sort({ createdAt: -1 }); // Sort orders by newest first
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No prescription orders found for this vendor" });
+    }
+
+    // Step 3: Send response
+    return res.status(200).json({
+      message: 'Prescription orders fetched successfully',
+      orders: orders.map(order => ({
+        ...order.toObject(),
+        assignedRider: order.assignedRider ? {
+          _id: order.assignedRider._id,
+          name: order.assignedRider.name,
+          email: order.assignedRider.email,
+          phone: order.assignedRider.phone,
+          address: order.assignedRider.address,
+          city: order.assignedRider.city,
+          state: order.assignedRider.state,
+          pinCode: order.assignedRider.pinCode,
+          profileImage: order.assignedRider.profileImage,
+          rideImages: order.assignedRider.rideImages,
+          deliveryCharge: order.assignedRider.deliveryCharge,
+        } : null,
+        user: order.userId ? {
+          name: order.userId.name,
+          email: order.userId.email,
+          mobile: order.userId.mobile,
+          userId: order.userId.userId
+        } : null, // Add user info here
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching prescription orders for vendor:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+// 📦 Get delivered orders for a vendor
+export const getDeliveredOrdersByVendor = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    // Find orders assigned to this vendor and delivered
+    const deliveredOrders = await Order.find({
+      assignedPharmacy: vendorId,
+      status: 'Delivered',
+    })
+      .populate("assignedRider")
+      .populate("userId", "name mobile")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      message: 'Delivered orders fetched successfully',
+      orders: deliveredOrders.map(order => ({
+        ...order.toObject(),
+        assignedRider: order.assignedRider ? {
+          _id: order.assignedRider._id,
+          name: order.assignedRider.name,
+          email: order.assignedRider.email,
+          phone: order.assignedRider.phone,
+          address: order.assignedRider.address,
+          city: order.assignedRider.city,
+          state: order.assignedRider.state,
+          pinCode: order.assignedRider.pinCode,
+          profileImage: order.assignedRider.profileImage,
+          rideImages: order.assignedRider.rideImages,
+          deliveryCharge: order.assignedRider.deliveryCharge,
+        } : null,
+        user: order.userId ? {
+          name: order.userId.name,
+          phone: order.userId.mobile,
+        } : null,
+      })),
+    });
+  } catch (error) {
+    console.error('Error fetching delivered orders for vendor:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+
+
+
+
+export const createOrderFromPrescription = async (req, res) => {
+  try {
+    const { prescriptionId } = req.body;
+    const { medicineDetails, notes, paymentMethod, paymentStatus } = req.body;
+    const { vendorId, userId } = req.params;
+
+    // Validate vendorId and userId
+    if (!mongoose.Types.ObjectId.isValid(vendorId) || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid vendorId or userId" });
+    }
+
+    // Find the prescription by ID
+    const prescription = await Prescription.findById(prescriptionId);
+    if (!prescription) {
+      return res.status(404).json({ message: "Prescription not found" });
+    }
+
+    // Find the user associated with the userId
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Fetch the pharmacy details associated with the vendorId
+    const pharmacy = await Pharmacy.findById(vendorId);
+    if (!pharmacy) {
+      return res.status(404).json({ error: "Vendor (Pharmacy) not found" });
+    }
+
+    // Fetch user's first address (assuming the first address is the preferred one)
+    const userAddress = user.myAddresses[0];
+    if (!userAddress) {
+      return res.status(404).json({ message: "User's address not found" });
+    }
+
+    // Create the delivery address object
+    const deliveryAddress = {
+      house: userAddress.house,
+      street: userAddress.street,
+      city: userAddress.city,
+      state: userAddress.state,
+      pincode: userAddress.pincode,
+      country: userAddress.country,
+    };
+
+    // Manually creating order items based on vendor's manual entry, now using MRP instead of price
+    const orderItems = medicineDetails.map((item) => ({
+      medicineId: item.medicineId,
+      name: item.name,
+      quantity: item.quantity,
+      mrp: item.mrp,  // MRP instead of price
+      dosage: item.dosage,
+      instructions: item.instructions,
+    }));
+
+    // Calculate Subtotal (price of all items without taxes/discounts)
+    const subtotal = orderItems.reduce((acc, item) => acc + item.mrp * item.quantity, 0);
+
+    // Optional: Add tax, discounts, shipping fees, etc.
+    const taxRate = 0.18;  // Example: 18% tax
+    const shippingFee = 50; // Example: Flat shipping fee
+    const taxAmount = subtotal * taxRate;
+    const total = subtotal + taxAmount + shippingFee;  // Final total after adding tax and shipping
+
+    // Create the order with additional information
+    const newOrder = new Order({
+      userId: userId,
+      pharmacyId: pharmacy._id,
+      vendorId: vendorId,
+      deliveryAddress: deliveryAddress,  // Delivery address is now stored as an object
+      subtotal,  // Store subtotal
+      total,     // Store total
+      totalAmount: total,
+      orderItems,
+      notes: notes || "",
+      paymentMethod,
+      paymentStatus: paymentStatus || "Pending",
+      status: "Pending",
+      isPrescriptionOrder: true,  // Mark this as a prescription-based order
+      statusTimeline: [{
+        status: "Pending",
+        message: "Order placed by vendor",
+        timestamp: new Date(),
+      }],
+      assignedRider: null,       // No rider assigned yet
+      assignedRiderStatus: null, // Rider status is null
+    });
+
+
+
+    newOrder.assignedPharmacy = vendorId;
+
+    // Save the order
+    await newOrder.save();
+
+    // Optionally notify the user
+    user.notifications.push({
+      orderId: newOrder._id,
+      status: "Pending",
+      message: `Your order has been placed successfully.`,
+      timestamp: new Date(),
+      read: false,
+    });
+    await user.save();
+
+    return res.status(201).json({
+      message: "Order created successfully",
+      order: newOrder,
+    });
+  } catch (error) {
+    console.error("Error creating order from prescription:", error);
+    return res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
+
+
+
+// Update Prescription Status
+export const updatePrescriptionStatus = async (req, res) => {
+  try {
+    const { prescriptionId } = req.params;
+    const { status } = req.body;
+
+    // Validate input
+    if (!status) {
+      return res.status(400).json({ message: "Status is required." });
+    }
+
+    // Update the prescription status
+    const prescription = await Prescription.findByIdAndUpdate(
+      prescriptionId,
+      { status },
+      { new: true } // Return the updated document
+    );
+
+    if (!prescription) {
+      return res.status(404).json({ message: "Prescription not found." });
+    }
+
+    res.status(200).json({
+      message: "Prescription status updated successfully.",
+      prescription,
+    });
+  } catch (error) {
+    console.error("Error updating prescription status:", error);
+    res.status(500).json({ message: "Error updating prescription status", error: error.message });
+  }
+};
+
+
+
+// Fetch all periodic orders for a vendor
+export const getAllPeriodicOrdersByVendor = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    // Step 1: Find all medicines that belong to this vendor
+    const vendorMedicines = await Medicine.find({ pharmacyId: vendorId }, '_id');
+    const medicineIds = vendorMedicines.map(med => med._id);
+
+    if (medicineIds.length === 0) {
+      return res.status(200).json({
+        message: 'No medicines found for this vendor.',
+        orders: [],
+      });
+    }
+
+    // Step 2: Find all periodic orders (orders with planType) related to these medicine IDs
+    const orders = await Order.find({
+      'orderItems.medicineId': { $in: medicineIds },
+      planType: { $exists: true, $ne: null }, // Orders with defined planType (periodic orders)
+    })
+      .populate('assignedRider', 'name phone') // Populate assigned rider info
+      .populate('userId', 'name email mobile') // Populate user info
+      .sort({ deliveryDate: -1 }); // Sort orders by deliveryDate descending
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No periodic orders found for this vendor" });
+    }
+
+    // Step 3: Send response
+    return res.status(200).json({
+      success: true,
+      count: orders.length,
+      orders: orders.map(order => ({
+        _id: order._id,
+        userId: {
+          _id: order.userId._id,
+          name: order.userId.name,
+          email: order.userId.email,
+          mobile: order.userId.mobile,
+        },
+        deliveryDate: order.deliveryDate,
+        deliveryAddress: order.deliveryAddress,
+        orderItems: order.orderItems,
+        subtotal: order.subtotal,
+        total: order.total,
+        deliveryCharge: order.deliveryCharge,
+        platformCharge: order.platformCharge,
+        planType: order.planType,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        status: order.status,
+        statusTimeline: order.statusTimeline,
+        notes: order.notes,
+        voiceNoteUrl: order.voiceNoteUrl,
+        assignedRider: order.assignedRider ? {
+          _id: order.assignedRider._id,
+          name: order.assignedRider.name,
+          phone: order.assignedRider.phone,
+        } : null,
+        assignedRiderStatus: order.assignedRiderStatus,
+        createdAt: order.createdAt,
+      })),
+    });
+
+  } catch (error) {
+    console.error("Error fetching periodic orders for vendor:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+
+export const createVendorQuery = async (req, res) => {
+  try {
+    // Destructure the body to get the necessary fields
+    const { vendorId, name, email, mobile, message } = req.body;
+
+    // Validate that vendorId exists (optional but recommended)
+    const vendor = await Pharmacy.findById(vendorId);
+    if (!vendor) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+    // Create a new query document for the vendor
+    const query = new Query({
+      vendorId,
+      name,
+      email,
+      mobile,
+      message,
+    });
+
+    // Save the query to the database
+    await query.save();
+
+    // Send response
+    res.status(201).json({ message: "Query submitted successfully", query });
+  } catch (error) {
+    // Handle any errors
+    console.error("Error creating vendor query:", error);
+    res.status(500).json({ message: "Error creating query", error });
+  }
+};
+
+
+export const getVendorQueries = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    // Optional: Validate vendorId format
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendorId" });
+    }
+
+    // Find queries by vendorId
+    const queries = await Query.find({ vendorId });
+
+    if (!queries.length) {
+      return res.status(404).json({ message: "No queries found for this vendor" });
+    }
+
+    // Send queries in response
+    res.status(200).json({ queries });
+  } catch (error) {
+    console.error("Error fetching vendor queries:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+
+export const getAllNotificationsForVendor = async (req, res) => {
+  try {
+    // Extract vendorId from params
+    const { vendorId } = req.params;
+
+    // Validate vendorId
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendor ID" });
+    }
+
+    // Find the vendor using the vendorId
+    const pharmacy = await Pharmacy.findById(vendorId);
+
+    if (!pharmacy) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    // Fetch all notifications for this vendor
+    const notifications = pharmacy.notifications;
+
+    // Send the notifications as a response
+    return res.status(200).json({
+      message: "Notifications fetched successfully",
+      notifications,
+    });
+  } catch (error) {
+    console.error("Error fetching notifications:", error);
+    return res.status(500).json({
+      message: "Server error while fetching notifications",
+      error: error.message,
+    });
+  }
+};
+
+
+
+export const deleteNotificationForVendor = async (req, res) => {
+  try {
+    // Extract vendorId and notificationId from params
+    const { vendorId, notificationId } = req.params;
+
+    // Validate vendorId and notificationId
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendor ID" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+      return res.status(400).json({ message: "Invalid notification ID" });
+    }
+
+    // Find the vendor (pharmacy) by vendorId
+    const pharmacy = await Pharmacy.findById(vendorId);
+
+    if (!pharmacy) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    // Check if the notification exists in the vendor's notifications
+    const notificationIndex = pharmacy.notifications.findIndex(
+      (notification) => notification._id.toString() === notificationId
+    );
+
+    if (notificationIndex === -1) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
+
+    // Remove the notification from the notifications array
+    pharmacy.notifications.splice(notificationIndex, 1);
+
+    // Save the updated pharmacy document
+    await pharmacy.save();
+
+    // Send a success response
+    return res.status(200).json({
+      message: "Notification deleted successfully",
+      notifications: pharmacy.notifications, // Optional: return the updated notifications array
+    });
+  } catch (error) {
+    console.error("Error deleting notification:", error);
+    return res.status(500).json({
+      message: "Server error while deleting notification",
+      error: error.message,
+    });
   }
 };

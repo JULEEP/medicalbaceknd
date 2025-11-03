@@ -16,7 +16,7 @@ const riderSchema = new mongoose.Schema(
     deliveryCharge: { type: Number, default: 0 },
     password: { type: String }, // ✅ password field
     drivingLicense: { type: String, default: null }, // ✅ new field added
-     drivingLicenseStatus: {
+    drivingLicenseStatus: {
       type: String,
       enum: ["Pending", "Approved", "Rejected"], // Status options
       default: "Pending", // Default status is "Pending"
@@ -34,24 +34,30 @@ const riderSchema = new mongoose.Schema(
         },
       },
     ],
- wallet: {
-  type: Number,
-  default: 0,
-},
-walletTransactions: [
-  {
-    amount: { type: Number, },
-    type: { type: String, enum: ["credit", "debit"], default: "credit" },
-    createdAt: { type: Date, default: Date.now }
-  }
-],
+    wallet: {
+      type: Number,
+      default: 0,
+    },
+    walletTransactions: [
+      {
+        amount: { type: Number, },
+        type: { type: String, enum: ["credit", "debit"], default: "credit" },
+        createdAt: { type: Date, default: Date.now }
+      }
+    ],
 
     status: {
       type: String,
       enum: ["online", "offline"],
       default: "online", // Default status is online
     },
-     // Rider notifications (with full order details)
+     baseFare: { type: Number, default: 0 }, // ✅ New base fare field
+    profileImage: {
+      type: String,
+      default: "", // or a default image URL
+    },
+
+    // Rider notifications (with full order details)
     notifications: [
       {
         message: String,

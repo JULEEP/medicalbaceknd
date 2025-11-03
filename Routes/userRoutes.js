@@ -35,6 +35,10 @@ import {
      sendMessage,
      getChatHistory,
      generateAndUploadInvoice,
+     cancelPeriodicOrder,
+     deleteAccount,
+     confirmDeleteAccount,
+     deleteUser,
     } from '../Controller/UserController.js'; // Import UserController
 const router = express.Router();
 
@@ -84,6 +88,12 @@ router.get("/preodicorders/:userId", getUserPeriodicOrders);
 router.post('/sendMessage/:userId/:riderId', sendMessage);
 router.get('/getChatHistory/:userId/:riderId', getChatHistory);
 router.get('/generate-invoice/:userId/:orderId', generateAndUploadInvoice);
+router.put("/cancelpreodicorder/:userId/:orderId", cancelPeriodicOrder);
+
+router.post('/deleteaccount', deleteAccount)
+router.get('/confirm-delete-account/:token', confirmDeleteAccount);
+router.delete('/delete-user/:userId', deleteUser);
+
 
 
 

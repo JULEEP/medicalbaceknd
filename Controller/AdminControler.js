@@ -13,6 +13,8 @@ import Banner from '../Models/Banner.js';
 import withdrawalRequestModel from '../Models/withdrawalRequestModel.js';
 import Medicine from '../Models/Medicine.js';
 import Message from '../Models/Message.js';
+import Faq from '../Models/Faq.js';
+import Coupon from '../Models/Coupon.js';
 
 
 
@@ -231,12 +233,12 @@ export const getSingleUser = async (req, res) => {
       status: order.status,
       assignedRider: order.assignedRider
         ? {
-            id: order.assignedRider._id,
-            name: order.assignedRider.name,
-            phone: order.assignedRider.phone,
-            email: order.assignedRider.email,
-            location: order.assignedRider.location,  // assuming location field exists
-          }
+          id: order.assignedRider._id,
+          name: order.assignedRider.name,
+          phone: order.assignedRider.phone,
+          email: order.assignedRider.email,
+          location: order.assignedRider.location,  // assuming location field exists
+        }
         : null,
       assignedRiderStatus: order.assignedRiderStatus,
       createdAt: order.createdAt,
@@ -366,6 +368,179 @@ export const getAllOrders = async (req, res) => {
     });
   }
 };
+
+
+
+export const getPrescriptionOrders = async (req, res) => {
+  try {
+    // Fetch all prescription orders, where isPrescriptionOrder is true, latest first
+    const orders = await Order.find({ isPrescriptionOrder: true })
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "userId",
+        select: "name mobile email profileImage"
+      })
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name price images description categoryName pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name location"
+        }
+      });
+
+    return res.status(200).json({
+      message: "All prescription orders fetched successfully",
+      totalOrders: orders.length,
+      orders
+    });
+
+  } catch (error) {
+    console.error("Get Prescription Orders Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+
+
+
+// Get Today's Orders Only
+export const getTodaysOrders = async (req, res) => {
+  try {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0); // Today at 00:00:00
+
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999); // Today at 23:59:59
+
+    // Fetch only today's orders
+    const orders = await Order.find({
+      createdAt: { $gte: startOfDay, $lte: endOfDay }
+    })
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "userId",
+        select: "name mobile email profileImage"
+      })
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name price images description categoryName pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name location"
+        }
+      });
+
+    return res.status(200).json({
+      message: "All orders fetched successfully",
+      totalOrders: orders.length,
+      orders
+    });
+
+  } catch (error) {
+    console.error("Get Today's Orders Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+
+
+// Get All Cancelled Orders
+export const getCancelledOrders = async (req, res) => {
+  try {
+    const orders = await Order.find({ status: "Cancelled" })
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "userId",
+        select: "name mobile email profileImage"
+      })
+      .populate({
+        path: "orderItems.medicineId",
+        select: "name price images description categoryName pharmacyId",
+        populate: {
+          path: "pharmacyId",
+          select: "name location"
+        }
+      });
+
+    return res.status(200).json({
+      message: "All orders fetched successfully",
+      totalOrders: orders.length,
+      orders
+    });
+
+  } catch (error) {
+    console.error("Get Cancelled Orders Error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
+
+
+
+
+// Get all Active Pharmacies (including password)
+// Get all Active Pharmacies
+export const getActivePharmacies = async (req, res) => {
+  try {
+    const activePharmacies = await Pharmacy.find({ status: "Active" });
+
+    return res.status(200).json({
+      message: "Active pharmacies fetched successfully",
+      total: activePharmacies.length,
+      pharmacies: activePharmacies,
+    });
+  } catch (error) {
+    console.error("Error fetching active pharmacies:", error);
+    return res.status(500).json({
+      message: "Server error while fetching active pharmacies",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// Controller for fetching all inactive pharmacies
+export const getInactivePharmacies = async (req, res) => {
+  try {
+    // Fetch pharmacies with 'Inactive' status
+    const inactivePharmacies = await Pharmacy.find({ status: "Inactive" });
+
+    // If no inactive pharmacies found, return an appropriate message
+    if (!inactivePharmacies || inactivePharmacies.length === 0) {
+      return res.status(404).json({
+        message: "No inactive pharmacies found",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Inactive pharmacies fetched successfully",
+      total: inactivePharmacies.length,
+      pharmacies: inactivePharmacies,
+    });
+  } catch (error) {
+    console.error("Error fetching inactive pharmacies:", error);
+    return res.status(500).json({
+      message: "Server error while fetching inactive pharmacies",
+      error: error.message,
+    });
+  }
+};
+
+
 
 
 
@@ -515,8 +690,8 @@ export const getAllPayments = async (req, res) => {
         path: "userId",
         select: "name mobile email profileImage"
       })
-      .select("userId totalAmount paymentMethod status createdAt updatedAt"); 
-      // sirf payment-related fields select kiye
+      .select("userId totalAmount paymentMethod status createdAt updatedAt");
+    // sirf payment-related fields select kiye
 
     return res.status(200).json({
       message: "All payments fetched successfully",
@@ -651,7 +826,7 @@ export const updateRider = async (req, res) => {
     rider.state = state || rider.state;
     rider.pinCode = pinCode || rider.pinCode;
     rider.drivingLicenseStatus = drivingLicenseStatus || rider.drivingLicenseStatus,
-    rider.latitude = latitude ? parseFloat(latitude) : rider.latitude;
+      rider.latitude = latitude ? parseFloat(latitude) : rider.latitude;
     rider.longitude = longitude ? parseFloat(longitude) : rider.longitude;
     rider.deliveryCharge = deliveryCharge ? parseFloat(deliveryCharge) : rider.deliveryCharge;
 
@@ -759,6 +934,7 @@ export const getAllRiders = async (req, res) => {
           status: rider.status,
           drivingLicenseStatus: rider.drivingLicenseStatus,
           drivingLicense: rider.drivingLicense,
+          baseFare: rider.baseFare,
           accountDetails: rider.accountDetails || [],
           createdAt: rider.createdAt,
         };
@@ -779,6 +955,63 @@ export const getAllRiders = async (req, res) => {
     });
   }
 };
+
+
+
+export const getOnlineRiders = async (req, res) => {
+  try {
+    // Find only online riders
+    const riders = await Rider.find({ status: "online" }).sort({ createdAt: -1 });
+
+    // Enrich with order stats
+    const enrichedRiders = await Promise.all(
+      riders.map(async (rider) => {
+        const totalAssigned = await Order.countDocuments({ assignedRider: rider._id });
+        const totalCompleted = await Order.countDocuments({
+          assignedRider: rider._id,
+          assignedRiderStatus: "Completed"
+        });
+
+        return {
+          _id: rider._id,
+          name: rider.name,
+          email: rider.email,
+          phone: rider.phone,
+          password: rider.password,
+          wallet: rider.wallet || 0,
+          deliveryCharge: rider.deliveryCharge || 0,
+          totalOrdersAssigned: totalAssigned,
+          totalOrdersCompleted: totalCompleted,
+          profileImage: rider.profileImage,
+          rideImages: rider.rideImages,
+          address: rider.address,
+          city: rider.city,
+          state: rider.state,
+          pinCode: rider.pinCode,
+          status: rider.status,
+          drivingLicenseStatus: rider.drivingLicenseStatus,
+          drivingLicense: rider.drivingLicense,
+          accountDetails: rider.accountDetails || [],
+          createdAt: rider.createdAt,
+        };
+      })
+    );
+
+    res.status(200).json({
+      message: "Online riders with order stats and bank details fetched successfully",
+      total: enrichedRiders.length,
+      riders: enrichedRiders,
+    });
+
+  } catch (error) {
+    console.error("Error in getOnlineRiders:", error);
+    res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 
 
 // Create Ad
@@ -890,6 +1123,26 @@ export const getAllQueries = async (req, res) => {
     res.status(500).json({ message: "Error fetching queries", error });
   }
 };
+
+
+// Controller to get all queries for riders (admin access)
+export const getRiderQueries = async (req, res) => {
+  try {
+    // Fetch all queries where riderId exists and sort by creation date
+    const queries = await Query.find({ riderId: { $exists: true } }).sort({ createdAt: -1 });
+
+    // If no queries are found for riders
+    if (!queries || queries.length === 0) {
+      return res.status(404).json({ message: "No queries found for any rider" });
+    }
+
+    // Send the list of rider-related queries
+    res.status(200).json(queries);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching rider queries", error });
+  }
+};
+
 
 
 
@@ -1006,6 +1259,51 @@ export const deleteNotification = async (req, res) => {
 
 
 
+// UPDATE: Notification by ID
+export const updateNotification = async (req, res) => {
+  const { id } = req.params;
+  const { title, body } = req.body;
+
+  try {
+    // Validate ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid notification ID"
+      });
+    }
+
+    // Find and update
+    const updatedNotification = await Notification.findByIdAndUpdate(
+      id,
+      { title, body },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedNotification) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification updated successfully",
+      data: updatedNotification
+    });
+
+  } catch (error) {
+    console.error("Update Notification Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while updating notification",
+      error: error.message
+    });
+  }
+};
+
+
 // GET all delivered orders
 export const getDeliveredOrders = async (req, res) => {
   try {
@@ -1052,8 +1350,7 @@ export const getDashboardData = async (req, res) => {
 
     // === Date Helpers ===
     const now = new Date();
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
     const daysAgo = (n) => {
       const d = new Date();
@@ -1067,53 +1364,28 @@ export const getDashboardData = async (req, res) => {
       return d;
     };
 
-    // Map medicineId to pharmacyId
-    const medicineToPharmacyMap = new Map();
-    medicines.forEach(med => {
-      medicineToPharmacyMap.set(med._id.toString(), med.pharmacyId.toString());
-    });
+    // Count total orders (no filter)
+    const totalOrders = orders.length;
 
-    // Calculate revenue for each pharmacy
-    const pharmacyRevenueMap = new Map();
+    // Count today's orders using date-only comparison
+    const isToday = (dateStr) => {
+      const date = new Date(dateStr);
+      return (
+        date.getFullYear() === now.getFullYear() &&
+        date.getMonth() === now.getMonth() &&
+        date.getDate() === now.getDate()
+      );
+    };
 
-    orders.forEach(order => {
-      if (!order.totalAmount || !order.orderItems || order.orderItems.length === 0) return;
+    const todaysOrdersCount = orders.filter(
+      (o) => o.createdAt && isToday(o.createdAt)
+    ).length;
 
-      // Calculate share of totalAmount per medicine in order (equal split)
-      const perMedicineRevenue = order.totalAmount / order.orderItems.length;
+    // Count active pharmacies
+    const activePharmaciesCount = pharmacies.filter(ph => ph.status === "Active").length;
+    const inactivePharmaciesCount = pharmacies.filter(ph => ph.status === "Inactive").length;
 
-      order.orderItems.forEach(item => {
-        const medId = item.medicineId?.toString();
-        if (!medId) return;
-
-        const pharmacyId = medicineToPharmacyMap.get(medId);
-        if (!pharmacyId) return;
-
-        const currentRevenue = pharmacyRevenueMap.get(pharmacyId) || 0;
-        pharmacyRevenueMap.set(pharmacyId, currentRevenue + perMedicineRevenue);
-      });
-    });
-
-    // Prepare topPharmacies array with revenue and orders count
-    const topPharmacies = pharmacies.map(ph => {
-      const revenue = pharmacyRevenueMap.get(ph._id.toString()) || 0;
-
-      // Count how many orders include medicines from this pharmacy
-      const ordersCount = orders.filter(order => {
-        return order.orderItems.some(item => {
-          const medId = item.medicineId?.toString();
-          return medicineToPharmacyMap.get(medId) === ph._id.toString();
-        });
-      }).length;
-
-      return {
-        name: ph.name,
-        revenue,
-        orders: ordersCount,
-      };
-    }).sort((a, b) => b.revenue - a.revenue);
-
-    // === Revenue Data Filters ===
+    // === Revenue Data ===
     const revenueData = [
       {
         label: "Today",
@@ -1147,6 +1419,47 @@ export const getDashboardData = async (req, res) => {
       },
     ];
 
+    // === Medicine to Pharmacy Mapping ===
+    const medicineToPharmacyMap = new Map();
+    medicines.forEach(med => {
+      medicineToPharmacyMap.set(med._id.toString(), med.pharmacyId?.toString());
+    });
+
+    // === Pharmacy Revenue ===
+    const pharmacyRevenueMap = new Map();
+
+    orders.forEach(order => {
+      if (!order.totalAmount || !order.orderItems || order.orderItems.length === 0) return;
+
+      const perMedicineRevenue = order.totalAmount / order.orderItems.length;
+
+      order.orderItems.forEach(item => {
+        const medId = item.medicineId?.toString();
+        const pharmacyId = medicineToPharmacyMap.get(medId);
+        if (!pharmacyId) return;
+
+        const currentRevenue = pharmacyRevenueMap.get(pharmacyId) || 0;
+        pharmacyRevenueMap.set(pharmacyId, currentRevenue + perMedicineRevenue);
+      });
+    });
+
+    // === Top Pharmacies ===
+    const topPharmacies = pharmacies.map(ph => {
+      const revenue = pharmacyRevenueMap.get(ph._id.toString()) || 0;
+
+      const ordersCount = orders.filter(order =>
+        order.orderItems.some(item =>
+          medicineToPharmacyMap.get(item.medicineId?.toString()) === ph._id.toString()
+        )
+      ).length;
+
+      return {
+        name: ph.name,
+        revenue,
+        orders: ordersCount,
+      };
+    }).sort((a, b) => b.revenue - a.revenue);
+
     // === User Orders Summary ===
     const userOrdersMap = new Map();
     orders.forEach(order => {
@@ -1161,29 +1474,22 @@ export const getDashboardData = async (req, res) => {
       const userOrders = userOrdersMap.get(userId) || [];
 
       const totalOrders = userOrders.length;
+      const medicinesOrdered = userOrders.reduce((sum, order) =>
+        sum + (order.orderItems?.length || 0), 0
+      );
 
-      // Total medicines ordered across all user orders
-      const medicinesOrdered = userOrders.reduce((sum, order) => {
-        return sum + (order.orderItems ? order.orderItems.length : 0);
-      }, 0);
-
-      // Last order date
       const lastOrderDate = userOrders.reduce((latest, order) => {
         const orderDate = order.createdAt ? new Date(order.createdAt) : null;
         return orderDate && (!latest || orderDate > latest) ? orderDate : latest;
       }, null);
 
-      // Count orders by status
-      let onTimeCount = 0;
-      let delayedCount = 0;
-      let cancelledCount = 0;
-
+      let onTime = 0, delayed = 0, cancelled = 0;
       userOrders.forEach(order => {
         if (order.status === "cancelled") {
-          cancelledCount++;
+          cancelled++;
         } else if (order.status === "delivered") {
-          if (order.isDelayed) delayedCount++;
-          else onTimeCount++;
+          if (order.isDelayed) delayed++;
+          else onTime++;
         }
       });
 
@@ -1193,66 +1499,64 @@ export const getDashboardData = async (req, res) => {
         accountCreated: user.createdAt ? new Date(user.createdAt).toISOString().split('T')[0] : "Unknown",
         totalOrders,
         medicinesOrdered,
-        onTime: onTimeCount,
-        delayed: delayedCount,
-        cancelled: cancelledCount,
+        onTime,
+        delayed,
+        cancelled,
       };
     });
 
     // === Pharmacy Insights ===
     const pharmacyInsights = pharmacies.map(ph => {
-      const pharmacyIdStr = ph._id.toString();
+      const phId = ph._id.toString();
 
-      // Total Orders including this pharmacy's medicines
-      const totalOrders = orders.filter(order => {
-        return order.orderItems.some(item => {
-          const medId = item.medicineId?.toString();
-          return medicineToPharmacyMap.get(medId) === pharmacyIdStr;
-        });
-      }).length;
+      const totalOrders = orders.filter(order =>
+        order.orderItems.some(item =>
+          medicineToPharmacyMap.get(item.medicineId?.toString()) === phId
+        )
+      ).length;
 
-      // Average Rating (assuming ph.ratings is an array of numbers)
       let avgRating = 0;
-      if (ph.ratings && ph.ratings.length > 0) {
-        const sumRatings = ph.ratings.reduce((acc, val) => acc + val, 0);
+      if (ph.ratings?.length > 0) {
+        const sumRatings = ph.ratings.reduce((a, b) => a + b, 0);
         avgRating = sumRatings / ph.ratings.length;
       } else if (typeof ph.rating === "number") {
-        avgRating = ph.rating;  // if single rating number available
+        avgRating = ph.rating;
       }
 
-      // Medicines Available
-      const medicinesAvailable = medicines.filter(med => med.pharmacyId.toString() === pharmacyIdStr).length;
-
-      // Joined Date (formatted YYYY-MM-DD)
-      const joinedDate = ph.createdAt ? new Date(ph.createdAt).toISOString().split('T')[0] : "Unknown";
+      const medicinesAvailable = medicines.filter(med => med.pharmacyId?.toString() === phId).length;
+      const joinedDate = ph.createdAt ? new Date(ph.createdAt).toISOString().split("T")[0] : "Unknown";
 
       return {
         pharmacy: ph.name,
         totalOrders,
-        avgRating: Number(avgRating.toFixed(2)), // round to 2 decimals
+        avgRating: Number(avgRating.toFixed(2)),
         medicinesAvailable,
         joinedDate,
       };
     });
 
-    // === Count Online Riders ===
+    // === Online Riders ===
     const onlineRidersCount = riders.filter(rider => rider.status === "online").length;
 
     // === Final Response ===
     res.json({
       stats: {
         totalUsers: users.length,
-        totalOrders: orders.length,
+        totalOrders,                      // ✅ FIXED
         totalPharmacies: pharmacies.length,
         totalMedicines: medicines.length,
         totalRiders: riders.length,
-        onlineRiders: onlineRidersCount,  // Added online riders count
+        onlineRiders: onlineRidersCount,
+        activePharmacies: activePharmaciesCount,
+        inactivePharmacies: inactivePharmaciesCount,
+        todaysOrders: todaysOrdersCount, // ✅ FIXED
       },
       revenueData,
       topPharmacies,
       userOrdersSummary,
       pharmacyInsights,
     });
+
   } catch (error) {
     console.error(error);
     res.status(500).json({
@@ -1261,6 +1565,7 @@ export const getDashboardData = async (req, res) => {
     });
   }
 };
+
 
 // ✅ Create Banner Controller
 export const createBanner = async (req, res) => {
@@ -1542,11 +1847,29 @@ export const sendMessage = async (req, res) => {
 // Get all messages (optionally you can filter by vendorId if needed)
 export const getAllMessages = async (req, res) => {
   try {
-    const messages = await Message.find().sort({ createdAt: -1 }); // latest first
-    return res.status(200).json(messages);
+    const messages = await Message.find().sort({ createdAt: -1 });
+
+    const populatedMessages = await Promise.all(
+      messages.map(async (msg) => {
+        // Fetch vendor details for each vendorId in the message
+        const populatedVendors = await Pharmacy.find({
+          _id: { $in: msg.vendorIds },
+        }).select('_id name vendorEmail');
+
+        // Return message object with vendor details instead of just ObjectIds
+        return {
+          _id: msg._id,
+          message: msg.message,
+          sentAt: msg.sentAt,
+          vendorIds: populatedVendors,
+        };
+      })
+    );
+
+    res.status(200).json(populatedMessages);
   } catch (error) {
-    console.error("Error fetching messages:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error('Error fetching messages:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -1570,19 +1893,30 @@ export const deleteMessage = async (req, res) => {
 
 export const getAllRiderQueries = async (req, res) => {
   try {
-    // Get all queries where riderId is present (i.e., not null or undefined)
-    const queries = await Query.find({ riderId: { $ne: null } }) // Filters out queries without a riderId
-      .populate('riderId', 'name mobile email');  // Populate rider info if needed
+    // ✅ Get only those queries where riderId exists (not null)
+    const queries = await Query.find({ riderId: { $ne: null } })
+      .populate('riderId', 'name mobile email');
 
-    if (queries.length === 0) {
-      return res.status(404).json({ message: 'No rider queries found with a valid riderId' });
+    // ✅ If none found
+    if (!queries.length) {
+      return res.status(404).json({
+        message: 'No rider queries found with a valid riderId',
+        queries: []
+      });
     }
 
-    // Send success response with only relevant queries
-    res.status(200).json({ message: 'Rider queries fetched successfully', queries });
+    // ✅ Send only relevant queries
+    res.status(200).json({
+      message: 'Rider queries fetched successfully',
+      queries
+    });
+
   } catch (error) {
     console.error('Error fetching rider queries:', error);
-    res.status(500).json({ message: 'Error fetching rider queries', error });
+    res.status(500).json({
+      message: 'Error fetching rider queries',
+      error: error.message
+    });
   }
 };
 
@@ -1737,5 +2071,394 @@ export const deletePeriodicOrder = async (req, res) => {
   } catch (error) {
     console.error("Error deleting the order:", error);
     res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const createFaq = async (req, res) => {
+  try {
+    const { question, answer, date, type } = req.body;
+
+    // Check if type is either 'rider' or 'user'
+    if (!['rider', 'user'].includes(type)) {
+      return res.status(400).json({ message: "Invalid type, must be 'rider' or 'user'" });
+    }
+
+    // Create new FAQ entry
+    const newFaq = await Faq.create({
+      question,
+      answer,
+      date: new Date(date),
+      type,  // Storing the type (rider or user)
+    });
+
+    res.status(201).json({
+      message: "FAQ created successfully",
+      faq: newFaq,
+    });
+  } catch (error) {
+    console.error("Error creating FAQ:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const getAllFaqs = async (req, res) => {
+  try {
+    const faqs = await Faq.find().sort({ date: -1 }); // Newest first
+    res.status(200).json({ faqs });
+  } catch (error) {
+    console.error("Error fetching FAQs:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+// Delete FAQ by ID
+export const deleteFaq = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Assuming the model is Faq
+    const faq = await Faq.findByIdAndDelete(id);
+
+    if (!faq) {
+      return res.status(404).json({ message: "FAQ not found" });
+    }
+
+    res.status(200).json({ message: "FAQ deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting FAQ:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+// Controller for getting FAQs for Rider
+export const getAllFaqsForRider = async (req, res) => {
+  try {
+    // Find all FAQs where type is 'rider'
+    const faqsForRider = await Faq.find({ type: "rider" });
+
+    if (!faqsForRider || faqsForRider.length === 0) {
+      return res.status(404).json({
+        message: "No FAQs available for riders.",
+      });
+    }
+
+    // Return the list of FAQs
+    return res.status(200).json({
+      faqs: faqsForRider,
+    });
+  } catch (error) {
+    console.error("Error fetching FAQs for rider:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// Controller for getting FAQs for User
+export const getAllFaqsForUser = async (req, res) => {
+  try {
+    // Find all FAQs where type is 'user'
+    const faqsForUser = await Faq.find({ type: "user" });
+
+    if (!faqsForUser || faqsForUser.length === 0) {
+      return res.status(404).json({
+        message: "No FAQs available for users.",
+      });
+    }
+
+    // Return the list of FAQs
+    return res.status(200).json({
+      faqs: faqsForUser,
+    });
+  } catch (error) {
+    console.error("Error fetching FAQs for user:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// ✅ Create a new coupon
+export const addCoupon = async (req, res) => {
+  const { couponCode, discountPercentage, expirationDate } = req.body;
+
+  try {
+    // Check if coupon already exists
+    const existingCoupon = await Coupon.findOne({ couponCode });
+    if (existingCoupon) {
+      return res.status(400).json({ message: "Coupon code already exists" });
+    }
+
+    // Create and save new coupon
+    const newCoupon = new Coupon({
+      couponCode,
+      discountPercentage,
+      expirationDate,
+    });
+    await newCoupon.save();
+    res.status(201).json({ message: "Coupon added successfully", coupon: newCoupon });
+  } catch (error) {
+    console.error("Error adding coupon:", error);
+    res.status(500).json({ message: "Failed to add coupon", error });
+  }
+};
+
+// ✅ Get all coupons
+export const getAllCoupons = async (req, res) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+    res.status(200).json({ message: "Coupons fetched successfully", coupons });
+  } catch (error) {
+    console.error("Error fetching coupons:", error);
+    res.status(500).json({ message: "Failed to fetch coupons", error });
+  }
+};
+
+
+
+// ✅ Edit a coupon
+export const editCoupon = async (req, res) => {
+  const { id } = req.params;  // Get coupon ID from URL params
+  const { couponCode, discountPercentage, expirationDate } = req.body;
+
+  try {
+    // Find the coupon by ID
+    const coupon = await Coupon.findById(id);
+    if (!coupon) {
+      return res.status(404).json({ message: "Coupon not found" });
+    }
+
+    // Update the coupon fields
+    coupon.couponCode = couponCode || coupon.couponCode;
+    coupon.discountPercentage = discountPercentage || coupon.discountPercentage;
+    coupon.expirationDate = expirationDate || coupon.expirationDate;
+    coupon.updatedAt = new Date();  // Update the timestamp
+
+    // Save the updated coupon
+    await coupon.save();
+    res.status(200).json({ message: "Coupon updated successfully", coupon });
+  } catch (error) {
+    console.error("Error updating coupon:", error);
+    res.status(500).json({ message: "Failed to update coupon", error });
+  }
+};
+
+// ✅ Delete a coupon
+export const deleteCoupon = async (req, res) => {
+  const { id } = req.params;  // Get coupon ID from URL params
+
+  try {
+    // Find and delete the coupon by ID
+    const coupon = await Coupon.findByIdAndDelete(id);
+    if (!coupon) {
+      return res.status(404).json({ message: "Coupon not found" });
+    }
+    res.status(200).json({ message: "Coupon deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting coupon:", error);
+    res.status(500).json({ message: "Failed to delete coupon", error });
+  }
+};
+
+
+
+
+// Set base fare for all riders
+export const setBaseFareForAllRiders = async (req, res) => {
+  try {
+    const { baseFare } = req.body;
+
+    if (!baseFare || baseFare < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid base fare amount is required"
+      });
+    }
+
+    // Update base fare for all riders
+    const result = await Rider.updateMany(
+      {},
+      { $set: { baseFare: parseFloat(baseFare) } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Base fare updated to ₹${baseFare} for all ${result.modifiedCount} riders`,
+      modifiedCount: result.modifiedCount,
+      baseFare: baseFare
+    });
+
+  } catch (error) {
+    console.error("Error setting base fare:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+// Get current base fare (from first rider)
+export const getCurrentBaseFare = async (req, res) => {
+  try {
+    const rider = await Rider.findOne().select("baseFare");
+    
+    res.status(200).json({
+      success: true,
+      baseFare: rider?.baseFare || 30 // Default to 30 if not set
+    });
+
+  } catch (error) {
+    console.error("Error getting base fare:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+// Update base fare for specific rider
+export const updateRiderBaseFare = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { baseFare } = req.body;
+
+    if (!baseFare || baseFare < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid base fare amount is required"
+      });
+    }
+
+    const rider = await Rider.findByIdAndUpdate(
+      riderId,
+      { baseFare: parseFloat(baseFare) },
+      { new: true }
+    );
+
+    if (!rider) {
+      return res.status(404).json({
+        success: false,
+        message: "Rider not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Base fare updated to ₹${baseFare} for rider ${rider.name}`,
+      rider: rider
+    });
+
+  } catch (error) {
+    console.error("Error updating rider base fare:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+
+
+export const getAllPrescriptionOrders = async (req, res) => {
+  try {
+    // Step 1: Find all orders where 'isPrescriptionOrder' is true
+    const orders = await Order.find({ isPrescriptionOrder: true })  // No filtering by vendorId
+      .populate("assignedRider")  // Populate assigned rider details
+      .populate("userId", "userId name email mobile") // Populate user details: name, email, and phone
+      .sort({ createdAt: -1 }); // Sort orders by newest first
+
+    // Step 2: If no orders found
+    if (orders.length === 0) {
+      return res.status(404).json({
+        message: "No prescription orders found",
+        orders: [],
+      });
+    }
+
+    // Step 3: Send response with detailed order information
+    return res.status(200).json({
+      message: "Prescription orders fetched successfully",
+      orders: orders.map((order) => ({
+        ...order.toObject(),
+        assignedRider: order.assignedRider
+          ? {
+              _id: order.assignedRider._id,
+              name: order.assignedRider.name,
+              email: order.assignedRider.email,
+              phone: order.assignedRider.phone,
+              address: order.assignedRider.address,
+              city: order.assignedRider.city,
+              state: order.assignedRider.state,
+              pinCode: order.assignedRider.pinCode,
+              profileImage: order.assignedRider.profileImage,
+              rideImages: order.assignedRider.rideImages,
+              deliveryCharge: order.assignedRider.deliveryCharge,
+            }
+          : null,
+        user: order.userId
+          ? {
+              name: order.userId.name,
+              email: order.userId.email,
+              mobile: order.userId.mobile,
+              userId: order.userId.userId,
+            }
+          : null, // Add user info here
+      })),
+    });
+  } catch (error) {
+    console.error("Error fetching prescription orders:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+export const getAllVendorQueries = async (req, res) => {
+  try {
+    // ✅ Get all queries
+    const queries = await Query.find({})
+      .populate('vendorId', 'vendorName vendorEmail vendorEmail'); // Populate vendor details
+
+    // ✅ If no queries found
+    if (!queries.length) {
+      return res.status(404).json({
+        message: 'No queries found from any vendor',
+        queries: []
+      });
+    }
+
+    // ✅ Send all relevant queries with vendor details
+    res.status(200).json({
+      message: 'All vendor queries fetched successfully',
+      queries: queries.map(query => ({
+        ...query.toObject(),
+        vendor: query.vendorId ? {
+          name: query.vendorId.vendorName,
+          email: query.vendorId.vendorEmail,
+          phone: query.vendorId.vendorEmail,
+        } : null,
+      })),
+    });
+
+  } catch (error) {
+    console.error('Error fetching all vendor queries:', error);
+    res.status(500).json({
+      message: 'Error fetching all vendor queries',
+      error: error.message
+    });
   }
 };

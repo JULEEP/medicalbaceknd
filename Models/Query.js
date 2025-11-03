@@ -25,6 +25,10 @@ const querySchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Rider", // Reference to Rider collection
     },
+    vendorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Pharmacy", // Reference to Vendor collection
+    },
   },
   { timestamps: true }
 );

@@ -1,6 +1,6 @@
 // router/riderRoutes.js or similar
 import express from "express";
-import {  addBankDetailsToRider, createRiderQuery, forgotPassword, getAcceptedOrdersForRiderController, getAllActiveOrdersForRiderController, getAllCompletedOrdersForRiderController, getNewOrdersForRiderController, getPickedUpOrdersForRiderController, getRiderBankDetails, getRiderDrivingLicense, getRiderEarningsGraph, getRiderNotifications, getRiderOrdersByStatus, getRiderOrderStats, getRiderProfile, getRiderWalletController, getSingleOrderForRiderController, loginRider, markOrderAsDeliveredController, signupRider, updateRiderLocation, updateRiderProfileImage, updateRiderStatus, updateRiderStatusController, uploadDeliveryProof, withdrawAmountFromWalletController } from "../Controller/RiderController.js";
+import {  addBankDetailsToRider, createRiderQuery, forgotPassword, getAcceptedOrdersForRiderController, getAllActiveOrdersForRiderController, getAllCompletedOrdersForRiderController, getNewOrdersForRiderController, getPickedUpOrdersForRiderController, getRiderBankDetails, getRiderDrivingLicense, getRiderEarningsGraph, getRiderNotifications, getRiderOrdersByStatus, getRiderOrderStats, getRiderProfile, getRiderWalletController, getSingleOrderForRiderController, getUpiInfo, loginRider, markOrderAsDeliveredController, signupRider, updateRiderLocation, updateRiderProfileImage, updateRiderStatus, updateRiderStatusController, uploadDeliveryProof, uploadMedicineProof, withdrawAmountFromWalletController } from "../Controller/RiderController.js";
 
 const router = express.Router();
 
@@ -29,7 +29,9 @@ router.get("/earnings-graph/:riderId", getRiderEarningsGraph);
 router.get("/driving-license/:riderId", getRiderDrivingLicense);
 router.post('/update-location/:riderId', updateRiderLocation);
 router.post("/uploadDeliveryProof/:riderId/:orderId", uploadDeliveryProof);
+router.post('/upload-medicine-proof/:riderId/:orderId', uploadMedicineProof);
 router.post('/createQuery', createRiderQuery);
+router.get('/upi-info', getUpiInfo);
 
 
 

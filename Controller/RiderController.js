@@ -7,6 +7,8 @@ import withdrawalRequestModel from "../Models/withdrawalRequestModel.js";
 import cloudinary from '../config/cloudinary.js';
 import Query from "../Models/Query.js";
 import User from "../Models/User.js";
+import Pharmacy from "../Models/Pharmacy.js";
+import Medicine from "../Models/Medicine.js";
 
 
 
@@ -26,21 +28,31 @@ export const signupRider = async (req, res) => {
     }
 
     let drivingLicenseUrl = "";
-    let drivingLicenseStatus = "Pending";  // Default status for new riders
+    let profileImageUrl = "";
+    let drivingLicenseStatus = "Pending"; // Default status
 
-    // 📂 Case 1: File uploaded
+    // 📂 Driving License Upload
     if (req.files && req.files.drivingLicense) {
       const file = req.files.drivingLicense;
       const uploaded = await cloudinary.uploader.upload(file.tempFilePath, {
         folder: "rider_licenses",
       });
       drivingLicenseUrl = uploaded.secure_url;
-    }
-    // 🌐 Case 2: URL passed directly
-    else if (req.body.drivingLicense && req.body.drivingLicense.startsWith("http")) {
+    } else if (req.body.drivingLicense && req.body.drivingLicense.startsWith("http")) {
       drivingLicenseUrl = req.body.drivingLicense;
     } else {
       return res.status(400).json({ message: "Driving license is required (upload or URL)" });
+    }
+
+    // 📷 Profile Image Upload (optional but recommended)
+    if (req.files && req.files.profileImage) {
+      const profileFile = req.files.profileImage;
+      const uploadedProfile = await cloudinary.uploader.upload(profileFile.tempFilePath, {
+        folder: "rider_profiles",
+      });
+      profileImageUrl = uploadedProfile.secure_url;
+    } else if (req.body.profileImage && req.body.profileImage.startsWith("http")) {
+      profileImageUrl = req.body.profileImage;
     }
 
     // 🆕 Create new rider
@@ -50,7 +62,8 @@ export const signupRider = async (req, res) => {
       phone,
       password,
       drivingLicense: drivingLicenseUrl,
-      drivingLicenseStatus, // Set status to "Pending" by default
+      drivingLicenseStatus,
+      profileImage: profileImageUrl || "", // Optional
     });
 
     await newRider.save();
@@ -67,6 +80,7 @@ export const signupRider = async (req, res) => {
     });
   }
 };
+
 
 export const loginRider = async (req, res) => {
   try {
@@ -483,7 +497,7 @@ export const getAcceptedOrdersForRiderController = async (req, res) => {
         select: 'name mrp description images pharmacyId', // Select the necessary fields
         populate: {
           path: 'pharmacyId',
-          select: 'name address contactNumber latitude longitude' // Populate pharmacyId fields
+          select: 'name address vendorPhone latitude longitude' // Populate pharmacyId fields
         }
       })
       .populate({
@@ -652,60 +666,62 @@ export const updateRiderStatusController = async (req, res) => {
     const { orderId, newStatus } = req.body;
 
     const order = await Order.findById(orderId);
-
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
+    if (!order) return res.status(404).json({ message: 'Order not found' });
 
     if (!order.assignedRider || order.assignedRider.toString() !== riderId) {
       return res.status(403).json({ message: 'This order is not assigned to you' });
     }
 
-    // ✅ If rejected
+    const user = await User.findById(order.userId);
+    if (!user) return res.status(404).json({ message: 'User not found for the order' });
+
+    // ✅ If Rider Rejected
     if (newStatus === 'Rejected') {
-      // 1. Add current rider to rejectedRiders array
       if (!order.rejectedRiders) order.rejectedRiders = [];
       if (!order.rejectedRiders.includes(riderId)) {
         order.rejectedRiders.push(riderId);
       }
 
-      // 2. Mark order status as rejected
+      order.assignedRider = null; // Clear rider
       order.assignedRiderStatus = 'Rejected';
       order.status = 'Rejected';
+
       order.statusTimeline.push({
         status: "Rejected",
         message: `Rider ${riderId} rejected the order`,
         timestamp: new Date(),
       });
 
+      user.notifications.push({
+        orderId: order._id,
+        status: "Rejected",
+        message: "Your order was rejected by the assigned rider. Searching for a new one...",
+        timestamp: new Date(),
+        read: false,
+      });
+
+      await user.save();
       await order.save();
 
-      // 3. Send confirmation response first
       res.status(200).json({ message: "Order rejected. Will try to reassign shortly." });
 
-      // 4. Reassign after delay (e.g., 10 seconds)
+      // ✅ Try Reassigning After 30 Seconds
       setTimeout(async () => {
         try {
-          const allRiders = await Rider.find({ status: 'online' });
+          const freshOrder = await Order.findById(orderId);
+          if (!freshOrder || freshOrder.assignedRider) return;
 
-          if (!allRiders || allRiders.length === 0) {
-            console.log("No riders online for reassignment.");
-            return;
-          }
+          const onlineRiders = await Rider.find({ status: 'online' });
 
-          // Get user location
-          const user = await User.findById(order.userId);
           const userLat = user.location?.coordinates[1] || 0;
           const userLon = user.location?.coordinates[0] || 0;
 
           let nearestRider = null;
           let minDistance = Infinity;
 
-          allRiders.forEach((rider) => {
-            if (
-              !rider.latitude || !rider.longitude ||
-              order.rejectedRiders.includes(rider._id.toString())
-            ) return;
+          for (const rider of onlineRiders) {
+            if (!rider.latitude || !rider.longitude) continue;
+            if (freshOrder.rejectedRiders?.includes(rider._id.toString())) continue;
 
             const riderLat = parseFloat(rider.latitude);
             const riderLon = parseFloat(rider.longitude);
@@ -715,64 +731,95 @@ export const updateRiderStatusController = async (req, res) => {
               minDistance = distance;
               nearestRider = rider;
             }
-          });
+          }
 
           if (nearestRider) {
-            // Reassign order
-            order.assignedRider = nearestRider._id;
-            order.assignedRiderStatus = 'Assigned';
-            order.status = 'Assigned';
-            order.statusTimeline.push({
+            // ✅ Reassign to new rider
+            freshOrder.assignedRider = nearestRider._id;
+            freshOrder.assignedRiderStatus = 'Pending';
+            freshOrder.status = 'Assigned';
+
+            freshOrder.statusTimeline.push({
               status: "Reassigned",
               message: `Order reassigned to ${nearestRider.name} after rejection`,
               timestamp: new Date(),
             });
-
-            // Notify riders
-            const prevRider = await Rider.findById(riderId);
-            if (prevRider) {
-              prevRider.notifications.push({
-                message: `You rejected order ${orderId}. It was reassigned.`,
-              });
-              await prevRider.save();
-            }
 
             nearestRider.notifications.push({
               message: `New order assigned to you from ${user.name}`,
             });
             await nearestRider.save();
 
-            await order.save();
+            user.notifications.push({
+              orderId: freshOrder._id,
+              status: "Reassigned",
+              message: `Your order was reassigned to a new rider: ${nearestRider.name}`,
+              timestamp: new Date(),
+              read: false,
+            });
+
+            await user.save();
+            await freshOrder.save();
+
             console.log(`Order ${orderId} reassigned to ${nearestRider.name}`);
           } else {
-            console.log("No eligible rider found to reassign the order.");
+            // ❌ No rider found – Cancel the order
+            freshOrder.status = 'Cancelled';
+            freshOrder.statusTimeline.push({
+              status: 'Cancelled',
+              message: 'Order was cancelled automatically. No rider was available after rejection.',
+              timestamp: new Date(),
+            });
+
+            user.notifications.push({
+              orderId: freshOrder._id,
+              status: "Cancelled",
+              message: "Unfortunately, your order was cancelled because no rider was available.",
+              timestamp: new Date(),
+              read: false,
+            });
+
+            await user.save();
+            await freshOrder.save();
+
+            console.log(`Order ${orderId} cancelled due to no available riders.`);
           }
         } catch (e) {
-          console.error("Error during reassignment:", e);
+          console.error("Error during reassignment/cancellation:", e);
         }
-      }, 10 * 1000); // 10 seconds delay
+      }, 30 * 1000); // 30 seconds
 
-      return; // Already sent response above
+      return;
     }
 
-    // ✅ If not rejected: just update status
+    // ✅ For Other Status Updates (Picked, Delivered, etc.)
     order.assignedRiderStatus = newStatus;
     order.status = newStatus;
+
     order.statusTimeline.push({
       status: newStatus,
       message: `Rider updated status to ${newStatus}`,
       timestamp: new Date(),
     });
 
+    user.notifications.push({
+      orderId: order._id,
+      status: newStatus,
+      message: `Your order status was updated to: ${newStatus}`,
+      timestamp: new Date(),
+      read: false,
+    });
+
+    await user.save();
     await order.save();
 
     return res.status(200).json({ message: `Order status updated to ${newStatus}` });
+
   } catch (error) {
     console.error("Error updating rider status:", error);
     return res.status(500).json({ message: 'Server error while updating rider status' });
   }
 };
-
 
 
 
@@ -1260,59 +1307,135 @@ export const getRiderBankDetails = async (req, res) => {
 };
 
 
-// ✅ Mark Order As Delivered
 export const markOrderAsDeliveredController = async (req, res) => {
   try {
     const { riderId, orderId } = req.params;
+    const { collectedAmount, paymentMethodType } = req.body;
 
+    // Validate IDs
     if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(orderId)) {
       return res.status(400).json({ message: "Invalid rider ID or order ID" });
     }
 
+    // Fetch order
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
 
+    // Validate rider assignment
     if (order.assignedRider?.toString() !== riderId) {
       return res.status(403).json({ message: "This order is not assigned to you" });
     }
 
+    // Check delivery proof
+    if (!order.deliveryProof || order.deliveryProof.length === 0) {
+      return res.status(400).json({
+        message: "Please upload delivery proof before marking the order as delivered.",
+      });
+    }
+
+    // Handle COD (Cash on Delivery)
+    if (order.paymentMethod === "Cash on Delivery") {
+      if (!paymentMethodType || !["cash", "online"].includes(paymentMethodType)) {
+        return res.status(400).json({
+          message: "Payment method type must be 'cash' or 'online'.",
+        });
+      }
+
+      if (collectedAmount === undefined || isNaN(collectedAmount)) {
+        return res.status(400).json({
+          message: "Collected amount is required for all COD payments (cash or online).",
+        });
+      }
+
+      const parsedAmount = parseFloat(collectedAmount);
+
+      // Store in DB
+      order.collectedAmount = parsedAmount;
+      order.codAmountReceived = parsedAmount;
+      order.codPaymentMode = paymentMethodType;
+      order.paymentMethodStatus = "Paid";
+
+      if (paymentMethodType === "online") {
+        order.isCodPaidOnline = true;
+        order.upiPaidAt = new Date();
+      }
+    }
+
+    // Fetch rider
     const rider = await Rider.findById(riderId);
     if (!rider) return res.status(404).json({ message: "Rider not found" });
 
-    const deliveryCharge = parseFloat(rider.deliveryCharge) || 0;
+    const deliveryCharge = parseFloat(order.deliveryCharge) || 0;  // Get delivery charge from the order
 
-    // ✅ Update Order
+    // Update order status to Delivered
     order.status = "Delivered";
     order.paymentStatus = "Completed";
     order.assignedRiderStatus = "Completed";
 
-    // ✅ Push to statusTimeline
+    // Add to status timeline
     order.statusTimeline.push({
       status: "Delivered",
       message: `Order delivered by rider ${rider.name || riderId}`,
       timestamp: new Date(),
     });
 
-    // ✅ Update Rider Wallet + Push Transaction
-    rider.wallet += deliveryCharge;
+    // Add COD payment status if applicable
+    if (order.paymentMethod === "Cash on Delivery") {
+      order.statusTimeline.push({
+        status: "COD Collected",
+        message:
+          paymentMethodType === "cash"
+            ? `₹${collectedAmount} collected in cash by rider ${rider.name || riderId}`
+            : `₹${collectedAmount} received via UPI (QR scanned) by customer.`,
+        timestamp: new Date(),
+      });
+    }
+
+    // Update rider wallet
+    rider.wallet += deliveryCharge;  // Add delivery charge to rider's wallet
     rider.walletTransactions.push({
       amount: deliveryCharge,
       type: "credit",
-      createdAt: new Date()
+      createdAt: new Date(),
     });
 
+    // Save order and rider updates
     await Promise.all([order.save(), rider.save()]);
 
     return res.status(200).json({
       message: "Order marked as delivered successfully",
-      updatedWallet: `₹${rider.wallet.toFixed(2)}`
+      updatedWallet: `₹${rider.wallet.toFixed(2)}`,  // Return the updated wallet balance
     });
+
   } catch (error) {
     console.error("Error marking order as delivered:", error);
     res.status(500).json({ message: "Server error while updating delivery status" });
   }
 };
 
+
+// Controller: paymentController.js
+
+export const getUpiInfo = async (req, res) => {
+  try {
+    const upiId = "juleeperween@ybl";
+
+    // Generate QR code using public QR code API
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=upi://pay?pa=${upiId}&pn=CLYNIX`;
+
+    return res.status(200).json({
+      message: "UPI info fetched successfully",
+      upiId,
+      qrCodeUrl,
+    });
+  } catch (error) {
+    console.error("Error fetching UPI info:", error);
+    return res.status(500).json({
+      message: "Server error while fetching UPI info",
+      error: error.message,
+    });
+  }
+};
 
 
 export const getRiderWalletController = async (req, res) => {
@@ -1483,32 +1606,34 @@ export const updateRiderStatus = async (req, res) => {
 export const getRiderOrdersByStatus = async (req, res) => {
   try {
     const { riderId } = req.params;
-    const { status } = req.query; // Query parameter for status
+    const { assignedRiderStatus, status } = req.query;
 
-    // Validate riderId
+    // ✅ Validate riderId
     if (!mongoose.Types.ObjectId.isValid(riderId)) {
       return res.status(400).json({ message: "Invalid rider ID" });
     }
 
-    // Check if rider exists
+    // ✅ Check if rider exists
     const rider = await Rider.findById(riderId);
     if (!rider) {
       return res.status(404).json({ message: "Rider not found" });
     }
 
-    // Query filter to exclude orders with "Rejected" status in both order and rider status
+    // ✅ Build dynamic query
     const query = {
       assignedRider: riderId,
-      assignedRiderStatus: { $ne: "Rejected" },  // Exclude "Rejected" rider status
-      status: { $ne: "Rejected" }  // Exclude "Rejected" order status
     };
 
-    // If status is provided, include it in the query filter
-    if (status) {
-      query.status = status; // filter by order status if provided
+    // 👉 Apply filters only if they exist
+    if (assignedRiderStatus) {
+      query.assignedRiderStatus = assignedRiderStatus;
     }
 
-    // Fetch orders with populate and exclude "Rejected" ones
+    if (status) {
+      query.status = status;
+    }
+
+    // ✅ Fetch orders with populate
     const orders = await Order.find(query)
       .populate({
         path: "orderItems.medicineId",
@@ -1522,10 +1647,10 @@ export const getRiderOrdersByStatus = async (req, res) => {
         path: "userId",
         select: "name mobile location",
       })
-      .sort({ createdAt: -1 }); // latest orders first
+      .sort({ createdAt: -1 });
 
     if (!orders || orders.length === 0) {
-      return res.status(404).json({ message: "No orders found for this rider" });
+      return res.status(404).json({ message: "No matching orders found" });
     }
 
     return res.status(200).json({
@@ -1533,12 +1658,15 @@ export const getRiderOrdersByStatus = async (req, res) => {
       orders,
     });
   } catch (error) {
-    console.error("Error fetching rider orders by status:", error);
-    return res
-      .status(500)
-      .json({ message: "Server error while fetching orders", error: error.message });
+    console.error("Error fetching rider orders:", error);
+    return res.status(500).json({
+      message: "Server error while fetching orders",
+      error: error.message,
+    });
   }
 };
+
+
 
 
 
@@ -1668,62 +1796,47 @@ export const updateRiderLocation = async (req, res) => {
 };
 
 
-
 export const uploadDeliveryProof = async (req, res) => {
   try {
     const { riderId, orderId } = req.params;
 
-    // Ensure image is uploaded
+    // Check for uploaded image
     if (!req.files || !req.files.image) {
       return res.status(400).json({ message: "No image file uploaded" });
     }
 
-    // Validate riderId as a valid ObjectId
-    if (!mongoose.Types.ObjectId.isValid(riderId)) {
-      return res.status(400).json({ message: "Invalid riderId" });
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid rider ID or order ID" });
     }
 
-    // Find the order by orderId and check assignedRider field
+    // Find order
     const order = await Order.findById(orderId);
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    // Debug: Log order details to ensure we get the assignedRider correctly
-    console.log("Order:", order);
-    console.log("Assigned Rider ID:", order.assignedRider ? order.assignedRider : "No Rider ID");
-
-    // Check if the order status is "Delivered"
-    if (order.status !== "Delivered") {
-      return res.status(400).json({ message: "Delivery proof can only be uploaded for delivered orders" });
-    }
-
-    // Check if the riderId matches the order's assignedRider
+    // Ensure rider is assigned to the order
     if (!order.assignedRider || order.assignedRider.toString() !== riderId) {
       return res.status(403).json({ message: "Rider is not assigned to this order" });
     }
 
-    // Upload the image to Cloudinary
+    // Upload image to Cloudinary
     const file = req.files.image;
     const uploadResponse = await cloudinary.uploader.upload(file.tempFilePath, {
-      folder: "order_delivery_proofs", // Organize in Cloudinary under this folder
+      folder: "order_delivery_proofs",
     });
 
-    // Get the URL of the uploaded image
-    const deliveryProofUrl = uploadResponse.secure_url;
-
-    // Add the image URL to the deliveryProof array in the order
+    // Push delivery proof into order
     order.deliveryProof.push({
-      riderId, // Assign the riderId to the proof
-      imageUrl: deliveryProofUrl, // The uploaded image URL
-      uploadedAt: new Date(), // Timestamp of when the proof is uploaded
+      riderId,
+      imageUrl: uploadResponse.secure_url,
+      uploadedAt: new Date(),
     });
 
-    // Save the updated order with the new delivery proof
     await order.save();
 
-    // Respond with the updated order data
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Delivery proof uploaded successfully",
       deliveryProof: order.deliveryProof,
@@ -1771,3 +1884,143 @@ export const createRiderQuery = async (req, res) => {
     res.status(500).json({ message: "Error creating query", error });
   }
 };
+
+
+
+export const uploadMedicineProof = async (req, res) => {
+  try {
+    const { riderId, orderId } = req.params;
+
+    // Check for uploaded image
+    if (!req.files || !req.files.image) {
+      return res.status(400).json({ message: "No image file uploaded" });
+    }
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(riderId) || !mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid rider ID or order ID" });
+    }
+
+    // Find order
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    // Ensure rider is assigned to the order
+    if (!order.assignedRider || order.assignedRider.toString() !== riderId) {
+      return res.status(403).json({ message: "Rider is not assigned to this order" });
+    }
+
+    // Get first medicine from order to find pharmacy
+    if (!order.orderItems || order.orderItems.length === 0) {
+      return res.status(400).json({ message: "No medicine items found in order" });
+    }
+
+    const firstMedicineId = order.orderItems[0].medicineId;
+    
+    // Find medicine details
+    const medicine = await Medicine.findById(firstMedicineId);
+    if (!medicine) {
+      return res.status(404).json({ message: "Medicine not found" });
+    }
+
+    // Find pharmacy details
+    const pharmacy = await Pharmacy.findById(medicine.pharmacyId);
+    if (!pharmacy) {
+      return res.status(404).json({ message: "Pharmacy not found" });
+    }
+
+    // Find rider details for current location
+    const rider = await Rider.findById(riderId);
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // Check if rider has latitude and longitude
+    if (!rider.latitude || !rider.longitude) {
+      return res.status(400).json({ 
+        message: "Rider location not available. Please enable location services." 
+      });
+    }
+
+    // Check if rider is at vendor's location
+    const riderLat = parseFloat(rider.latitude);
+    const riderLng = parseFloat(rider.longitude);
+    const pharmacyLat = pharmacy.latitude;
+    const pharmacyLng = pharmacy.longitude;
+
+    // Calculate distance between rider and pharmacy (in kilometers)
+    const distanceInKm = calculateDistance(
+      [riderLng, riderLat],  // [longitude, latitude]
+      [pharmacyLng, pharmacyLat]  // [longitude, latitude]
+    );
+
+    // Convert km to meters for proximity check
+    const distanceInMeters = distanceInKm * 1000;
+
+    // Set proximity threshold (e.g., 100 meters)
+    const PROXIMITY_THRESHOLD = 100;
+
+    if (distanceInMeters > PROXIMITY_THRESHOLD) {
+      return res.status(403).json({ 
+        message: "You are not at the vendor's location. Please go to the vendor's location first.",
+        distance: Math.round(distanceInMeters),
+        threshold: PROXIMITY_THRESHOLD
+      });
+    }
+
+    // Upload image to Cloudinary
+    const file = req.files.image;
+    const uploadResponse = await cloudinary.uploader.upload(file.tempFilePath, {
+      folder: "medicine_pickup_proofs",
+    });
+
+    // Create beforePickupProof field if it doesn't exist in order schema
+    if (!order.beforePickupProof) {
+      order.beforePickupProof = [];
+    }
+
+    order.beforePickupProof.push({
+      riderId,
+      imageUrl: uploadResponse.secure_url,
+      uploadedAt: new Date(),
+      medicineId: firstMedicineId,
+      pharmacyId: medicine.pharmacyId
+    });
+
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Medicine proof uploaded successfully",
+      medicineProof: order.beforePickupProof,
+      distance: Math.round(distanceInMeters),
+      locationVerified: true
+    });
+  } catch (error) {
+    console.error("🔥 Error in uploadMedicineProof:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+// // Helper function to calculate distance between two coordinates (Haversine formula)
+// function calculateDistance(lat1, lon1, lat2, lon2) {
+//   const R = 6371e3; // Earth's radius in meters
+//   const φ1 = (lat1 * Math.PI) / 180;
+//   const φ2 = (lat2 * Math.PI) / 180;
+//   const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+//   const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+
+//   const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+//             Math.cos(φ1) * Math.cos(φ2) *
+//             Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+//   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+//   return R * c; // Distance in meters
+// }
+
+

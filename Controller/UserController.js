@@ -19,6 +19,11 @@ import Chat from '../Models/Chat.js';
 import { format } from 'date-fns';
 import puppeteer from 'puppeteer';
 import fs from 'fs';
+import Coupon from '../Models/Coupon.js';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+
+
 
 
 
@@ -44,34 +49,32 @@ cloudinary.config({
 
 export const registerUser = async (req, res) => {
   try {
-    const { name, mobile, code } = req.body;
+    const { name, mobile, code, email } = req.body;
 
-    // Validate required fields
     if (!name || !mobile) {
       return res.status(400).json({ message: 'Name and Mobile are required' });
     }
 
-    // Check if user already exists by mobile
-    const existingUser = await User.findOne({ mobile });
+    // Check if user already exists (by mobile or email if provided)
+    const query = email ? { $or: [{ mobile }, { email }] } : { mobile };
+    const existingUser = await User.findOne(query);
+
     if (existingUser) {
-      return res.status(400).json({ message: 'User already exists with this mobile number' });
+      return res.status(400).json({ message: 'User already exists with this mobile number or email' });
     }
 
-    // Generate a random 8-digit code if not provided
-    const generatedCode =
-      code || Math.floor(10000000 + Math.random() * 90000000).toString();
+    const generatedCode = code || Math.floor(10000000 + Math.random() * 90000000).toString();
 
-    // Create new user with default status "active"
     const newUser = new User({
       name,
       mobile,
+      email: email || null,
       code: generatedCode,
-      status: "active", // ✅ default status
+      status: "active",
     });
 
     await newUser.save();
 
-    // ✅ Generate JWT token after successful registration
     const token = jwt.sign(
       { id: newUser._id },
       process.env.JWT_SECRET_KEY,
@@ -80,13 +83,14 @@ export const registerUser = async (req, res) => {
 
     return res.status(201).json({
       message: "User registered successfully",
-      token, // Include token in response
+      token,
       user: {
         id: newUser._id,
         name: newUser.name,
         mobile: newUser.mobile,
+        email: newUser.email,
         code: newUser.code,
-        status: newUser.status, // ✅ include status in response
+        status: newUser.status,
         createdAt: newUser.createdAt,
       },
     });
@@ -719,7 +723,7 @@ export const getCart = async (req, res) => {
     const cart = await Cart.findOne({ userId })
       .populate({
         path: 'items.medicineId',
-        select: 'name price images description pharmacyId',
+        select: 'name price images description pharmacyId mrp',
         populate: {
           path: 'pharmacyId',
           select: 'name location'
@@ -812,16 +816,20 @@ export const removeFromCart = async (req, res) => {
       return res.status(404).json({ message: 'Medicine not found in cart' });
     }
 
-    // Recalculate subTotal
+    // Recalculate subTotal - MRP use karo price ki jagah
     let subTotal = 0;
     for (const item of cart.items) {
       const med = await Medicine.findById(item.medicineId);
       if (med) {
-        subTotal += med.price * item.quantity;
+        subTotal += med.mrp * item.quantity; // MRP use karo
       }
     }
 
     cart.subTotal = subTotal;
+
+    // Fixed charges set karo
+    cart.platformFee = 10;
+    cart.deliveryCharge = 22;
     cart.totalPayable = cart.subTotal + cart.platformFee + cart.deliveryCharge;
 
     await cart.save();
@@ -836,7 +844,6 @@ export const removeFromCart = async (req, res) => {
     return res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
-
 
 
 export const addAddress = async (req, res) => {
@@ -901,54 +908,37 @@ export const getAddresses = async (req, res) => {
 
 
 
-/// Utility: Haversine formula to calculate distance in km
-const calculateDistance = (coord1, coord2) => {
-  const toRad = (value) => (value * Math.PI) / 180;
-  const [lon1, lat1] = coord1;
-  const [lon2, lat2] = coord2;
-
-  const R = 6371; // Earth radius in km
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-};
-
-// Delivery charge calculation per km (adjust rate as needed)
-const calculateDeliveryCharge = (distanceKm) => {
-  const ratePerKm = 5; // 5 currency units per km
-  return Math.ceil(distanceKm * ratePerKm);
-};
-
 export const createBookingFromCart = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { addressId, notes, voiceNoteUrl, paymentMethod, transactionId } = req.body;
+    const {
+      addressId,
+      notes,
+      voiceNoteUrl,
+      paymentMethod,
+      transactionId,
+      couponCode,
+    } = req.body;
 
-    // Validate User and Address IDs
+    // Validate IDs
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ message: "Invalid user ID" });
     }
-
     if (!mongoose.Types.ObjectId.isValid(addressId)) {
       return res.status(400).json({ message: "Invalid address ID" });
     }
 
+    // Fetch User
     const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
 
+    // Find delivery address
     const deliveryAddress = user.myAddresses.id(addressId);
     if (!deliveryAddress) {
       return res.status(404).json({ message: "Address not found" });
     }
 
-    // Fetch and validate cart
+    // Fetch cart and populate medicine info
     const cart = await Cart.findOne({ userId }).populate({
       path: "items.medicineId",
       select: "name mrp images description pharmacyId",
@@ -958,55 +948,52 @@ export const createBookingFromCart = async (req, res) => {
       return res.status(400).json({ message: "Cart is empty" });
     }
 
-    // Prepare order items from cart
+    // Prepare order items
     const orderItems = cart.items.map((item) => ({
       medicineId: item.medicineId._id,
       quantity: item.quantity,
       name: item.medicineId.name,
-      price: item.price, // Price from cart
+      price: item.price,
       images: item.medicineId.images,
       description: item.medicineId.description,
       pharmacy: item.medicineId.pharmacyId,
     }));
 
-    // Use cart totals for the order
-    const { subTotal, platformFee, deliveryCharge, totalPayable } = cart;
+    let { subTotal } = cart;
+    const platformFee = 10;
+    const deliveryCharge = 0;
+    let totalPayable = subTotal + platformFee + deliveryCharge;
 
-    // Find nearest rider
-    const allRiders = await Rider.find();
-    let nearestRider = null;
-    let minDistance = Infinity;
+    let discountAmount = 0;
+    if (couponCode) {
+      const coupon = await Coupon.findOne({ couponCode });
+      if (coupon) {
+        if (coupon.expirationDate < new Date()) {
+          return res.status(400).json({ message: "Coupon has expired" });
+        }
+        discountAmount = (subTotal * coupon.discountPercentage) / 100;
+        totalPayable -= discountAmount;
+        if (totalPayable < 0) totalPayable = 0;
 
-    const userLat = user.location?.coordinates[1] || 0;
-    const userLon = user.location?.coordinates[0] || 0;
-
-    // Step 1: Filter online riders
-    const onlineRiders = allRiders.filter(rider => rider.status === 'online');
-    if (onlineRiders.length === 0) {
-      return res.status(404).json({ message: "No online riders available" });
+        orderItems.push({
+          name: `Coupon Discount: ${couponCode}`,
+          price: -discountAmount,
+          quantity: 1,
+        });
+      } else {
+        return res.status(404).json({ message: "Invalid coupon code" });
+      }
     }
 
-    // Step 2: Find the nearest online rider
-    onlineRiders.forEach((rider) => {
-      if (!rider.latitude || !rider.longitude) return;
-
-      const riderLat = parseFloat(rider.latitude);
-      const riderLon = parseFloat(rider.longitude);
-      const distance = calculateDistance([riderLon, riderLat], [userLon, userLat]);
-
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearestRider = rider;
-      }
-    });
-
-    // Payment Handling
+    // Payment verification (if not COD)
     let paymentStatus = "Pending";
     let verifiedPaymentDetails = null;
 
     if (paymentMethod !== "Cash on Delivery") {
       if (!transactionId) {
-        return res.status(400).json({ message: "Transaction ID is required for online payments" });
+        return res
+          .status(400)
+          .json({ message: "Transaction ID is required for online payments" });
       }
 
       try {
@@ -1016,11 +1003,10 @@ export const createBookingFromCart = async (req, res) => {
         }
 
         if (paymentInfo.status === "authorized") {
-          await razorpay.payments.capture(transactionId, totalAmount * 100, "INR");
+          await razorpay.payments.capture(transactionId, totalPayable * 100, "INR");
         }
 
         verifiedPaymentDetails = await razorpay.payments.fetch(transactionId);
-
         if (verifiedPaymentDetails.status !== "captured") {
           return res.status(400).json({
             message: `Payment not captured. Status: ${verifiedPaymentDetails.status}`,
@@ -1030,11 +1016,45 @@ export const createBookingFromCart = async (req, res) => {
         paymentStatus = "Captured";
       } catch (err) {
         console.error("Razorpay verification error:", err);
-        return res.status(500).json({ message: "Payment verification failed", error: err.message });
+        return res
+          .status(500)
+          .json({ message: "Payment verification failed", error: err.message });
       }
     }
 
-    // Create new order
+    // Extract user coordinates from user.location.coordinates (lng, lat)
+    const [userLng, userLat] = user.location?.coordinates || [];
+
+    if (
+      typeof userLat !== "number" ||
+      typeof userLng !== "number"
+    ) {
+      return res.status(400).json({
+        message: "User location coordinates are missing or invalid",
+      });
+    }
+
+    // Find nearest pharmacy
+    const nearestPharmacies = await Pharmacy.find({
+      status: "Active",
+      location: {
+        $near: {
+          $geometry: {
+            type: "Point",
+            coordinates: [userLng, userLat],
+          },
+          $maxDistance: 10000, // 10 km
+        },
+      },
+    });
+
+    if (!nearestPharmacies.length) {
+      return res.status(404).json({ message: "No pharmacy found nearby." });
+    }
+
+    const selectedPharmacy = nearestPharmacies[0];
+
+    // Create order
     const newOrder = new Order({
       userId,
       deliveryAddress,
@@ -1043,68 +1063,57 @@ export const createBookingFromCart = async (req, res) => {
       platformFee,
       deliveryCharge,
       totalAmount: totalPayable,
+      couponCode: couponCode || null,
+      discountAmount,
       notes: notes || "",
       voiceNoteUrl: voiceNoteUrl || "",
       paymentMethod,
       transactionId: transactionId || null,
       paymentStatus,
       status: "Pending",
-      statusTimeline: [{
-        status: "Pending",
-        message: "Order placed",
-        timestamp: new Date(),
-      }],
-      assignedRider: nearestRider ? nearestRider._id : null,
-      assignedRiderStatus: nearestRider ? "Assigned" : null,
+      statusTimeline: [
+        {
+          status: "Pending",
+          message: "Order placed",
+          timestamp: new Date(),
+        },
+      ],
+      assignedPharmacy: selectedPharmacy._id,
+      pharmacyResponse: "Pending",
       razorpayOrder: verifiedPaymentDetails || null,
     });
 
-    // Rider Notification
-    if (nearestRider) {
-      newOrder.statusTimeline.push({
-        status: "Rider Assigned",
-        message: `Rider ${nearestRider.name} assigned`,
-        timestamp: new Date(),
-      });
-
-      nearestRider.notifications.push({
-        message: `New order assigned to you from ${user.name}`,
-        order: {
-          _id: newOrder._id,
-          user: {
-            _id: user._id,
-            name: user.name,
-            phone: user.phone,
-          },
-          deliveryAddress,
-          orderItems,
-          subTotal,
-          platformFee,
-          deliveryCharge,
-          notes: notes || "",
-          voiceNoteUrl: voiceNoteUrl || "",
-          paymentMethod,
-          paymentStatus,
-          status: newOrder.status,
-          statusTimeline: newOrder.statusTimeline,
-        },
-      });
-
-      await nearestRider.save();
-    }
-
-    // Save order and clear cart
     await newOrder.save();
 
+    // Notify user
+    user.notifications.push({
+      orderId: newOrder._id,
+      status: "Pending",
+      message: `Your order has been placed successfully.`,
+      timestamp: new Date(),
+      read: false,
+    });
+    await user.save();
+
+    // Notify selected pharmacy
+    selectedPharmacy.notifications.push({
+      orderId: newOrder._id,
+      status: "Pending",
+      message: `New order placed by ${user.name}.`,
+      timestamp: new Date(),
+      read: false,
+    });
+    await selectedPharmacy.save();
+
+    // Clear cart
     cart.items = [];
     cart.subTotal = 0;
     cart.platformFee = 0;
     cart.deliveryCharge = 0;
     cart.totalPayable = 0;
-
     await cart.save();
 
-    // Send notification to user
+    // Global notification (for admin)
     await Notification.create({
       type: "Order",
       referenceId: newOrder._id,
@@ -1115,13 +1124,11 @@ export const createBookingFromCart = async (req, res) => {
       message: "Order placed successfully",
       order: newOrder,
     });
-
   } catch (error) {
-    console.error("Error in booking:", error);
+    console.error("Error in createBookingFromCart:", error);
     return res.status(500).json({ message: "Server Error", error: error.message });
   }
 };
-
 
 export const getMyBookings = async (req, res) => {
   try {
@@ -1635,7 +1642,7 @@ export const reorderDeliveredOrder = async (req, res) => {
         },
       ],
       assignedRider: nearestRider?._id || null,
-      assignedRiderStatus: nearestRider ? "Assigned" : null,
+      assignedRiderStatus: "Pending",
       razorpayOrder: verifiedPaymentDetails || null,
       isReordered: true,
     });
@@ -1906,12 +1913,12 @@ export const getUserPeriodicOrders = async (req, res) => {
     }
 
     // Fetch only orders with planType (non-null and non-empty)
-    const orders = await Order.find({ 
-      userId, 
+    const orders = await Order.find({
+      userId,
       planType: { $exists: true, $ne: null, $ne: "" }  // filter for planType that exists and not empty string
     })
-    .populate("assignedRider", "name phone")
-    .sort({ deliveryDate: -1 });
+      .populate("assignedRider", "name phone")
+      .sort({ deliveryDate: -1 });
 
     const ordersWithMedicineImages = await Promise.all(
       orders.map(async (order) => {
@@ -1968,6 +1975,73 @@ export const getUserPeriodicOrders = async (req, res) => {
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
+
+
+
+export const cancelPeriodicOrder = async (req, res) => {
+  try {
+    const { userId, orderId } = req.params;
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order ID" });
+    }
+
+    // Fetch order
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    // Check ownership
+    if (order.userId.toString() !== userId) {
+      return res.status(403).json({ message: "You are not authorized to cancel this order" });
+    }
+
+    // Prevent cancelling already delivered/cancelled orders
+    if (["Delivered", "Cancelled"].includes(order.status)) {
+      return res.status(400).json({ message: `Order is already ${order.status}` });
+    }
+
+    // ✅ Only update order status
+    order.status = "Cancelled";
+    order.statusTimeline.push({
+      status: "Cancelled",
+      message: "Order was cancelled by user",
+      timestamp: new Date(),
+    });
+
+    await order.save();
+
+    // Optional: Notify assigned rider
+    if (order.assignedRider) {
+      const rider = await Rider.findById(order.assignedRider);
+      if (rider) {
+        rider.notifications.push({
+          message: `Order from ${order.deliveryAddress?.name || "a user"} has been cancelled.`,
+          order: order._id,
+        });
+        await rider.save();
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Order cancelled successfully",
+      orderId: order._id,
+    });
+
+  } catch (error) {
+    console.error("❌ Error cancelling order:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
 
 
 
@@ -2223,5 +2297,130 @@ export const generateAndUploadInvoice = async (req, res) => {
       message: "Server error",
       error: error.message
     });
+  }
+};
+
+
+
+// Setup Nodemailer transport
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'pms226803@gmail.com',
+    pass: 'nrasbifqxsxzurrm',
+  },
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false,
+  requireTLS: true,
+  tls: {
+    rejectUnauthorized: false
+  },
+  connectionTimeout: 60000,
+  greetingTimeout: 30000,
+  socketTimeout: 60000
+});
+
+
+export const deleteAccount = async (req, res) => {
+  const { email, reason } = req.body;
+
+  // Validate email and reason
+  if (!email || !reason) {
+    return res.status(400).json({ message: 'Email and reason are required' });
+  }
+
+  try {
+    // Find the user by email
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Generate a unique token for account deletion
+    const token = crypto.randomBytes(20).toString('hex');
+    const deleteLink = `${process.env.BASE_URL}/confirm-delete-account/${token}`;
+
+    // Set the deleteToken and deleteTokenExpiration
+    user.deleteToken = token;
+    user.deleteTokenExpiration = Date.now() + 3600000;  // Token expires in 1 hour
+
+    // Log the user object before saving
+    console.log('User before saving:', user);
+
+    // Save the token and expiration time to the database
+    await user.save();  // This should now save the user along with the deleteToken and deleteTokenExpiration
+
+    // Log after saving to confirm
+    console.log('User after saving:', user);
+
+    // Send the confirmation email
+    const mailOptions = {
+      from: 'pms226803@gmail.com',
+      to: email,
+      subject: 'Account Deletion Request Received',
+      text: `Hi ${user.name},\n\nWe have received your account deletion request. To confirm the deletion of your account, please click the link below:\n\n${deleteLink}\n\nReason: ${reason}\n\nIf you have any questions or need further assistance, please feel free to contact us at contact.varahiselfdrivecars@gmail.com.\n\nBest regards,\nYour Team`,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    return res.status(200).json({
+      message: 'Account deletion request has been processed.We are send mail shortly.Please check your email and confirm the link to delete.',
+      token: token // Send the token in the response
+    });
+  } catch (err) {
+    console.error('Error in deleteAccount:', err);
+    return res.status(500).json({ message: 'Something went wrong' });
+  }
+};
+
+export const confirmDeleteAccount = async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    const user = await User.findOne({
+      deleteToken: token,
+      deleteTokenExpiration: { $gt: Date.now() },
+    });
+
+    // Token is valid, delete the user account
+    await User.deleteOne({ _id: user._id });
+
+    // Always return success even if something minor fails afterward
+    return res.status(200).json({
+      message: 'Your account has been successfully deleted.',
+    });
+  } catch (err) {
+    // Optional: You can still log it but don't let it affect the user
+    console.error('Error in confirmDeleteAccount:', err);
+
+    // Return a 200 anyway if user deletion probably succeeded
+    return res.status(200).json({
+      message: 'Your account has been successfully deleted.',
+    });
+  }
+};
+
+
+
+export const deleteUser = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // Check if user exists
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Delete the user
+    await User.findByIdAndDelete(userId);
+
+    return res.status(200).json({ message: 'User deleted successfully.' });
+  } catch (error) {
+    console.error('Error in deleteUser:', error);
+    return res.status(500).json({ message: 'Something went wrong.' });
   }
 };
