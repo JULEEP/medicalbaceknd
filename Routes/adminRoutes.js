@@ -1,7 +1,7 @@
 // routes/order.routes.js
 
 import express from 'express';
-import { acceptWithdrawalRequest, addCoupon, createAd, createBanner, createFaq, createRider, deleteAd, deleteBanner, deleteCoupon, deleteFaq, deleteMessage, deleteNotification, deleteOrder, deletePeriodicOrder, deletePrescriptionForAdmin, deleteQuery, deleteRider, deleteRiderQuery, deleteUser, deleteWithdrawalRequest, editCoupon, getActivePharmacies, getAllAds, getAllBanners, getAllCoupons, getAllFaqs, getAllFaqsForRider, getAllFaqsForUser, getAllMessages, getAllNotifications, getAllOrders, getAllPayments, getAllPreodicOrders, getAllPrescriptionOrders, getAllPrescriptionsForAdmin, getAllQueries, getAllRiderQueries, getAllRiders, getAllUsers, getAllVendorQueries, getAllWithdrawalRequestsController, getCancelledOrders, getCurrentBaseFare, getDashboardData, getDeliveredOrders, getInactivePharmacies, getOnlineRiders, getPrescriptionOrders, getRefundOrders, getSingleOrder, getSingleUser, getTodaysOrders, loginAdmin, logoutAdmin, registerAdmin, sendMessage, setBaseFareForAllRiders, updateAd, updateBanner, updateNotification, updateOrderStatus, updatePeriodicOrder, updateQueryStatus, updateRider, updateRiderBaseFare, updateRiderQuery, updateUser, updateUserStatus } from '../Controller/AdminControler.js';
+import { acceptWithdrawalRequest, addCoupon, createAd, createBanner, createFaq, createRider, deleteAd, deleteBanner, deleteCoupon, deleteFaq, deleteMessage, deleteNotification, deleteOrder, deletePeriodicOrder, deletePrescriptionForAdmin, deleteQuery, deleteRider, deleteRiderQuery, deleteUser, deleteWithdrawalRequest, editCoupon, getActivePharmacies, getAllAds, getAllBanners, getAllCoupons, getAllFaqs, getAllFaqsForRider, getAllFaqsForUser, getAllMessages, getAllNotifications, getAllOrders, getAllPayments, getAllPreodicOrders, getAllPrescriptionOrders, getAllPrescriptionsForAdmin, getAllQueries, getAllRiderQueries, getAllRiders, getAllUsers, getAllVendorQueries, getAllWithdrawalRequests, getAllWithdrawalRequestsController, getCancelledOrders, getCurrentBaseFare, getDashboardData, getDeliveredOrders, getInactivePharmacies, getOnlineRiders, getPrescriptionOrders, getRefundOrders, getSingleOrder, getSingleUser, getTodaysOrders, loginAdmin, logoutAdmin, registerAdmin, sendMessage, setBaseFareForAllRiders, updateAd, updateBanner, updateNotification, updateOrderStatus, updatePeriodicOrder, updateQueryStatus, updateRider, updateRiderBaseFare, updateRiderQuery, updateUser, updateUserStatus, updateVendorWithdrawalStatus } from '../Controller/AdminControler.js';
 
 const router = express.Router();
 
@@ -81,6 +81,8 @@ router.get("/base-fare/current", getCurrentBaseFare);
 router.put("/base-fare/rider/:riderId", updateRiderBaseFare);
 
 router.get('/prescription-orders', getAllPrescriptionOrders);
+router.get('/allvendorwidrawal', getAllWithdrawalRequests);
+router.put('/updatewidh-status/:withdrawalId', updateVendorWithdrawalStatus);
 
 
 export default router;

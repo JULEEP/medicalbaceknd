@@ -15,6 +15,7 @@ import Medicine from '../Models/Medicine.js';
 import Message from '../Models/Message.js';
 import Faq from '../Models/Faq.js';
 import Coupon from '../Models/Coupon.js';
+import VendorWithdrawal from '../Models/VendorWithdrawal.js';
 
 
 
@@ -722,16 +723,66 @@ export const createRider = async (req, res) => {
       latitude,
       longitude,
       deliveryCharge,
-      status = "online", // Default to online if not provided
+      status = "online",
     } = req.body;
 
+    // =========================
+    // 🔴 BASIC VALIDATION
+    // =========================
     if (!name || !email || !phone || !address) {
       return res.status(400).json({
+        success: false,
         message: "Name, email, phone, and address are required",
       });
     }
 
-    // Upload profile image
+    // =========================
+    // 🔴 DUPLICATE VALIDATION
+    // =========================
+    const existingRider = await Rider.findOne({
+      $or: [{ phone }, { email }],
+    });
+
+    if (existingRider) {
+      return res.status(400).json({
+        success: false,
+        message:
+          existingRider.phone === phone
+            ? "Rider already exists with this phone number"
+            : "Rider already exists with this email",
+      });
+    }
+
+    // =========================
+    // 🔴 LAT / LNG VALIDATION
+    // =========================
+    if (latitude && isNaN(latitude)) {
+      return res.status(400).json({
+        success: false,
+        message: "Latitude must be a valid number",
+      });
+    }
+
+    if (longitude && isNaN(longitude)) {
+      return res.status(400).json({
+        success: false,
+        message: "Longitude must be a valid number",
+      });
+    }
+
+    // =========================
+    // 🔴 DELIVERY CHARGE VALIDATION
+    // =========================
+    if (deliveryCharge && isNaN(deliveryCharge)) {
+      return res.status(400).json({
+        success: false,
+        message: "Delivery charge must be a valid number",
+      });
+    }
+
+    // =========================
+    // 📸 UPLOAD PROFILE IMAGE
+    // =========================
     let profileImageUrl = "";
     if (req.files?.profileImage) {
       const uploaded = await cloudinary.uploader.upload(
@@ -741,7 +792,9 @@ export const createRider = async (req, res) => {
       profileImageUrl = uploaded.secure_url;
     }
 
-    // Upload multiple ride images
+    // =========================
+    // 🚲 UPLOAD RIDE IMAGES
+    // =========================
     let rideImageUrls = [];
     if (req.files?.rideImages) {
       const rideFiles = Array.isArray(req.files.rideImages)
@@ -756,10 +809,14 @@ export const createRider = async (req, res) => {
       }
     }
 
-    // Generate random 4-digit password
+    // =========================
+    // 🔐 RANDOM 4-DIGIT PASSWORD
+    // =========================
     const password = Math.floor(1000 + Math.random() * 9000).toString();
 
-    // Create Rider with status
+    // =========================
+    // ✅ CREATE RIDER
+    // =========================
     const rider = new Rider({
       name,
       email,
@@ -768,24 +825,26 @@ export const createRider = async (req, res) => {
       city,
       state,
       pinCode,
-      latitude: parseFloat(latitude),
-      longitude: parseFloat(longitude),
+      latitude: latitude ? parseFloat(latitude) : null,
+      longitude: longitude ? parseFloat(longitude) : null,
       profileImage: profileImageUrl,
       rideImages: rideImageUrls,
-      deliveryCharge: parseFloat(deliveryCharge) || 0,
+      deliveryCharge: deliveryCharge ? parseFloat(deliveryCharge) : 0,
       password,
-      status, // Set status here (default online)
+      status,
     });
 
     await rider.save();
 
     return res.status(201).json({
+      success: true,
       message: "Rider created successfully",
       rider,
     });
   } catch (error) {
     console.error("Create Rider Error:", error);
     return res.status(500).json({
+      success: false,
       message: "Server error",
       error: error.message,
     });
@@ -2459,6 +2518,141 @@ export const getAllVendorQueries = async (req, res) => {
     res.status(500).json({
       message: 'Error fetching all vendor queries',
       error: error.message
+    });
+  }
+};
+
+
+
+// Get all vendor withdrawal requests (ADMIN)
+// Get all vendor withdrawal requests (ADMIN)
+export const getAllWithdrawalRequests = async (req, res) => {
+  try {
+    const { status, startDate, endDate, limit = 10, page = 1 } = req.query;
+
+    // ✅ Only withdrawals having vendor
+    const query = {
+      vendor: { $ne: null }
+    };
+
+    if (status) {
+      query.status = status;
+    }
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const withdrawals = await VendorWithdrawal.find(query)
+      .populate({
+        path: 'vendor',
+        select: 'vendorName vendorEmail vendorPhone'
+      })
+      .populate({
+        path: 'bankAccount',
+        select: 'bankName accountNumber ifscCode accountHolderName'
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await VendorWithdrawal.countDocuments(query);
+
+    const formattedWithdrawals = withdrawals
+      .filter(w => w.vendor) // ✅ extra safety
+      .map(w => ({
+        _id: w._id,
+        amount: w.amount,
+        status: w.status,
+        paymentMethod: w.paymentMethod,
+        transactionId: w.transactionId,
+        createdAt: w.createdAt,
+
+        vendor: {
+          vendorId: w.vendor._id,
+          vendorName: w.vendor.vendorName,
+          vendorEmail: w.vendor.vendorEmail,
+          vendorPhone: w.vendor.vendorPhone
+        },
+
+        bankAccount: w.bankAccount
+      }));
+
+    res.status(200).json({
+      success: true,
+      message: 'Vendor withdrawal requests fetched successfully',
+      withdrawals: formattedWithdrawals,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching withdrawal requests:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+
+
+export const updateVendorWithdrawalStatus = async (req, res) => {
+  try {
+    const { withdrawalId } = req.params;
+    const { status } = req.body;
+
+    // Validate withdrawalId
+    if (!mongoose.Types.ObjectId.isValid(withdrawalId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid withdrawal ID",
+      });
+    }
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: "Status is required",
+      });
+    }
+
+    // Find withdrawal
+    const withdrawal = await VendorWithdrawal.findById(withdrawalId);
+    if (!withdrawal) {
+      return res.status(404).json({
+        success: false,
+        message: "Withdrawal request not found",
+      });
+    }
+
+    // Update status only
+    withdrawal.status = status;
+    withdrawal.updatedAt = new Date();
+
+    await withdrawal.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Withdrawal status updated successfully",
+      status: withdrawal.status,
+    });
+
+  } catch (error) {
+    console.error("Error updating withdrawal status:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
     });
   }
 };

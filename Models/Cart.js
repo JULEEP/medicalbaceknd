@@ -21,8 +21,10 @@ const cartSchema = new mongoose.Schema(
           min: 1,
           default: 1,
         },
-        price: {
+        mrp: {           // 🔹 store medicine MRP
           type: Number,
+          required: true,
+          default: 0,
         },
         images: [
           {
@@ -38,7 +40,7 @@ const cartSchema = new mongoose.Schema(
         },
       },
     ],
-    subTotal: { type: Number, default: 0 }, // medicines price * quantity
+    subTotal: { type: Number, default: 0 }, // medicines MRP * quantity
     platformFee: { type: Number, default: 10 }, // fixed ₹10
     deliveryCharge: { type: Number, default: 22 }, // fixed ₹22
     totalPayable: { type: Number, default: 0 }, // subTotal + platformFee + deliveryCharge

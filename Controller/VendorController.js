@@ -11,6 +11,8 @@ import Rider from "../Models/Rider.js";
 import User from "../Models/User.js";
 import mongoose from "mongoose";
 import { Notification } from "../Models/Notification.js";
+import BankAccount from "../Models/BankAccount.js";
+import VendorWithdrawal from "../Models/VendorWithdrawal.js";
 
 dotenv.config();
 
@@ -447,184 +449,192 @@ export const updateOrderStatusByVendor = async (req, res) => {
     const { vendorId, orderId } = req.params;
     const { status } = req.body;
 
-    if (!status) {
-      return res.status(400).json({ message: 'Status is required in the request body.' });
+    if (!mongoose.Types.ObjectId.isValid(orderId)) {
+      return res.status(400).json({ message: "Invalid order ID" });
     }
 
-    const order = await Order.findOne({
-      _id: orderId,
-      assignedPharmacy: vendorId,
-    }).populate("userId");
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendor ID" });
+    }
 
+    if (!status) {
+      return res.status(400).json({ message: "Status is required" });
+    }
+
+    const order = await Order.findById(orderId).populate("userId");
     if (!order) {
-      return res.status(404).json({
-        message: 'Order not found or not assigned to this vendor.',
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    // Ensure pharmacyResponses is always initialized as an array
+    if (!order.pharmacyResponses) {
+      order.pharmacyResponses = [];
+    }
+
+    // Check if the vendor is part of the pharmacyResponses
+    const pharmacyResponseIndex = order.pharmacyResponses.findIndex(
+      (response) => response.pharmacyId.toString() === vendorId
+    );
+
+    if (pharmacyResponseIndex === -1) {
+      return res.status(403).json({
+        message: "Order not assigned to this pharmacy",
       });
     }
 
-    const user = order.userId;
+    // =====================================================
+    // ❌ VENDOR REJECTS ORDER
+    // =====================================================
+    if (status === "Rejected") {
+      // Update the pharmacy's response to "Rejected"
+      order.pharmacyResponses[pharmacyResponseIndex].status = "Rejected";
+      order.pharmacyResponses[pharmacyResponseIndex].respondedAt = new Date();
 
-    // ==================================================================
-    // IF VENDOR REJECTS ORDER -> Save Notification
-    // ==================================================================
-    if (status === 'Rejected') {
-      if (!order.rejectedPharmacies) order.rejectedPharmacies = [];
-
+      // Add pharmacy to rejectedPharmacies if not already there
       if (!order.rejectedPharmacies.includes(vendorId)) {
         order.rejectedPharmacies.push(vendorId);
       }
 
-      order.statusTimeline.push({
-        status: 'Rejected',
-        message: `Vendor ${vendorId} rejected the order.`,
-        timestamp: new Date(),
-      });
+      // Check if all pharmacies have rejected the order
+      const allRejected = order.pharmacyResponses.every(
+        (response) => response.status === "Rejected"
+      );
 
-      order.assignedPharmacy = null;
+      // If all pharmacies rejected the order, cancel the order
+      if (allRejected) {
+        order.status = "Cancelled";
+        order.statusTimeline.push({
+          status: "Cancelled",
+          message: "All pharmacies rejected the order",
+          timestamp: new Date(),
+        });
+      } else {
+        order.statusTimeline.push({
+          status: "Rejected",
+          message: `Pharmacy ${vendorId} rejected the order`,
+          timestamp: new Date(),
+        });
+      }
 
       await order.save();
 
-      // 🔔 CREATE NOTIFICATION
-      try {
-        const notif = await Notification.create({
-          type: "Order",
-          referenceId: order._id,
-          vendorId: vendorId,
-          orderId: orderId,
-          message: `Vendor rejected order #${order.bookingNo || order._id}`,
-          status: 'Rejected',
-          timestamp: new Date()
-        });
-        console.log("Notification stored:", notif);
-      } catch (notifErr) {
-        console.error("Error storing notification:", notifErr);
-      }
-
-      // Schedule reassignment
-      scheduleReassignOrder(order._id);
-
       return res.status(200).json({
-        message: 'Order rejected by vendor and will be reassigned if not accepted by another vendor.',
+        message: "Order rejected by pharmacy",
         order,
       });
     }
 
-    // ==================================================================
-    // FOR OTHER STATUS UPDATES -> Save Notification
-    // ==================================================================
-    order.status = status;
-    order.statusTimeline.push({
-      status,
-      message: `Vendor updated order status to ${status}`,
-      timestamp: new Date(),
-    });
+    // =====================================================
+    // ✅ VENDOR ACCEPTS ORDER
+    // =====================================================
+    if (status === "Accepted") {
+      // Update the pharmacy's response to "Accepted"
+      order.pharmacyResponses[pharmacyResponseIndex].status = "Accepted";
+      order.pharmacyResponses[pharmacyResponseIndex].respondedAt = new Date();
 
-    // Push in user's notification
-    if (user) {
-      user.notifications.push({
-        orderId: order._id,
-        status,
-        message: `Your order status has been updated to "${status}" by the vendor.`,
-        timestamp: new Date(),
-        read: false,
-      });
-      await user.save();
-    }
+      // Set overall pharmacyResponse status to "Accepted" if all pharmacies accept the order
+      const allAccepted = order.pharmacyResponses.every(
+        (response) => response.status === "Accepted"
+      );
 
-    // 🔔 CREATE NOTIFICATION IN NOTIFICATION SCHEMA
-    try {
-      const notif = await Notification.create({
-        type: "Order",
-        referenceId: order._id,
-        vendorId: vendorId,
-        orderId: orderId,
-        message: `Vendor updated order status to ${status}`,
-        status: "Pending", 
-        timestamp: new Date()
-      });
-      console.log("Notification stored:", notif);
-    } catch (notifErr) {
-      console.error("Error storing notification:", notifErr);
-    }
-
-    // ==================================================================
-    // ASSIGN RIDER IF ACCEPTED
-    // ==================================================================
-    if (status === "Accepted" && !order.assignedRider) {
-      const allRiders = await Rider.find({ status: 'online' });
-      const rejectedRiders = order.rejectedRiders || [];
-
-      let nearestRider = null;
-      let minDistance = Infinity;
-
-      const userLat = user.location?.coordinates[1] || 0;
-      const userLon = user.location?.coordinates[0] || 0;
-
-      allRiders.forEach((rider) => {
-        if (!rider.latitude || !rider.longitude) return;
-        if (rejectedRiders.includes(rider._id.toString())) return;
-
-        const riderLat = parseFloat(rider.latitude);
-        const riderLon = parseFloat(rider.longitude);
-        const distance = calculateDistance([riderLon, riderLat], [userLon, userLat]);
-
-        if (distance < minDistance) {
-          minDistance = distance;
-          nearestRider = rider;
-        }
-      });
-
-      if (nearestRider) {
-        order.assignedRider = nearestRider._id;
-        order.assignedRiderStatus = "Assigned";
-
-        const baseFare = nearestRider.baseFare || 30;
-        const deliveryCharge = calculateDeliveryCharge(minDistance) + baseFare;
-        order.deliveryCharge = deliveryCharge;
-
+      if (allAccepted) {
+        order.pharmacyResponse = "Accepted";
+        order.status = "Accepted";
         order.statusTimeline.push({
-          status: "Rider Assigned",
-          message: `Rider ${nearestRider.name} assigned.`,
+          status: "Accepted",
+          message: `Order accepted by pharmacy ${vendorId}`,
           timestamp: new Date(),
         });
 
-        nearestRider.notifications.push({
-          message: `New order assigned to you.`,
-          order: {
-            _id: order._id,
-            user: {
-              _id: user._id,
-              name: user.name,
-              phone: user.phone,
-            },
-            deliveryAddress: order.deliveryAddress,
-            orderItems: order.orderItems,
-            subTotal: order.subTotal,
-            platformFee: order.platformFee,
-            deliveryCharge: order.deliveryCharge,
-            notes: order.notes || "",
-            voiceNoteUrl: order.voiceNoteUrl || "",
-            paymentMethod: order.paymentMethod,
-            paymentStatus: order.paymentStatus,
-            status: order.status,
-            statusTimeline: order.statusTimeline,
-          },
-        });
+        // 🚴 ASSIGN A RIDER IF NOT ASSIGNED
+        if (!order.assignedRider) {
+          const riders = await Rider.find({ status: "online" });
 
-        await nearestRider.save();
+          let nearestRider = null;
+          let minDistance = Infinity;
+
+          const userLat = order.userId.location?.coordinates[1];
+          const userLng = order.userId.location?.coordinates[0];
+
+          // Loop through all available riders and find the nearest one
+          for (const rider of riders) {
+            if (!rider.latitude || !rider.longitude) continue;
+
+            const distance = calculateDistance(
+              [rider.longitude, rider.latitude],
+              [userLng, userLat]
+            );
+
+            if (distance < minDistance) {
+              minDistance = distance;
+              nearestRider = rider;
+            }
+          }
+
+          if (nearestRider) {
+            order.assignedRider = nearestRider._id;
+            order.assignedRiderStatus = "Assigned";
+
+            const baseFare = nearestRider.baseFare || 30;
+            order.deliveryCharge =
+              calculateDeliveryCharge(minDistance) + baseFare;
+
+            order.statusTimeline.push({
+              status: "Rider Assigned",
+              message: `Rider ${nearestRider.name} assigned`,
+              timestamp: new Date(),
+            });
+
+            // Notify the rider about the new assignment
+            nearestRider.notifications.push({
+              message: "New order assigned to you",
+              orderId: order._id,
+              timestamp: new Date(),
+            });
+
+            await nearestRider.save();
+          }
+        }
+      } else {
+        order.pharmacyResponse = "Pending";  // Some pharmacies still pending
+        order.statusTimeline.push({
+          status: "Pending",
+          message: `Pharmacy ${vendorId} accepted the order`,
+          timestamp: new Date(),
+        });
       }
+
+      await order.save();
+
+      return res.status(200).json({
+        message: "Order accepted successfully",
+        order,
+      });
     }
+
+    // =====================================================
+    // ℹ️ OTHER STATUS UPDATES
+    // =====================================================
+    // Update order status
+    order.status = status;
+    order.statusTimeline.push({
+      status,
+      message: `Order updated to ${status}`,
+      timestamp: new Date(),
+    });
 
     await order.save();
 
     return res.status(200).json({
-      message: 'Order status updated successfully.',
+      message: "Order status updated",
       order,
     });
-
   } catch (error) {
-    console.error('Error updating order status for vendor:', error);
-    return res.status(500).json({ message: 'Server error', error: error.message });
+    console.error("updateOrderStatusByVendor error:", error);
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
   }
 };
 
@@ -1755,6 +1765,368 @@ export const deleteNotificationForVendor = async (req, res) => {
     return res.status(500).json({
       message: "Server error while deleting notification",
       error: error.message,
+    });
+  }
+};
+
+
+export const deleteOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;  // Get the orderId from the route parameter
+
+    // Find and delete the order in the database by ID
+    const order = await Order.findByIdAndDelete(orderId);
+
+    // If the order does not exist
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Order deleted successfully",
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+export const getVendorWallet = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    // Validate vendorId
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ message: "Invalid vendor ID" });
+    }
+
+    // Find the vendor (pharmacy) using vendorId
+    const pharmacy = await Pharmacy.findById(vendorId);
+
+    if (!pharmacy) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    // Return wallet info
+    return res.status(200).json({
+      message: "Vendor wallet fetched successfully",
+      walletBalance: pharmacy.wallet || 0,
+      walletTransactions: pharmacy.walletTransactions || [],
+    });
+
+  } catch (error) {
+    console.error("Error fetching vendor wallet:", error);
+    return res.status(500).json({
+      message: "Server error while fetching vendor wallet",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// Add bank account
+export const addBankAccount = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    const {
+      accountHolderName,
+      bankName,
+      accountNumber,
+      ifscCode,
+      accountType = "savings",
+      upiId,
+      branchName,
+      isDefault = false,
+    } = req.body;
+
+    console.log("Received vendorId:", vendorId);
+
+    // ✅ Validate vendorId
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ success: false, message: "Invalid vendor ID" });
+    }
+
+    // ✅ Find vendor using vendorId
+    const vendor = await Pharmacy.findById(vendorId);
+    console.log("Vendor fetched:", vendor);
+
+    if (!vendor) {
+      return res.status(404).json({ success: false, message: "Vendor not found" });
+    }
+
+    // ✅ Check if account already exists for this vendor
+    const existingAccount = await BankAccount.findOne({
+      vendor: vendorId,
+      $or: [
+        { accountNumber: accountNumber },
+        { upiId: upiId || null }
+      ]
+    });
+
+    if (existingAccount) {
+      return res.status(400).json({ success: false, message: "Bank account or UPI ID already exists" });
+    }
+
+    // ✅ Make first account default if needed
+    const accountCount = await BankAccount.countDocuments({ vendor: vendorId });
+    const defaultAccount = accountCount === 0 ? true : isDefault;
+
+    // ✅ Create new bank account
+    const bankAccount = new BankAccount({
+      vendor: vendorId,
+      accountHolderName,
+      bankName,
+      accountNumber,
+      ifscCode,
+      accountType,
+      upiId,
+      branchName,
+      isDefault: defaultAccount,
+      status: "pending_verification"
+    });
+
+    await bankAccount.save();
+
+    console.log("Bank account added:", bankAccount._id);
+
+    return res.status(201).json({
+      success: true,
+      message: "Bank account added successfully",
+      accountId: bankAccount._id,
+      bankAccount
+    });
+
+  } catch (error) {
+    console.error("Error adding bank account:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+// Get all bank accounts
+export const getBankAccounts = async (req, res) => {
+ try {
+    const { vendorId } = req.params;
+
+    // ✅ Find vendor using vendorId
+    const vendor = await Pharmacy.findById(vendorId);
+    if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
+
+    const accounts = await BankAccount.find({ vendor: vendorId }).sort({ isDefault: -1, createdAt: -1 });
+
+    res.status(200).json({ success: true, message: 'Bank accounts fetched successfully', accounts });
+
+  } catch (error) {
+    console.error('Error fetching bank accounts:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// Update bank account
+export const updateBankAccount = async (req, res) => {
+  try {
+    const { vendorId, accountId } = req.params;
+    const updateData = req.body;
+
+    // ✅ Find vendor using vendorId
+    const vendor = await Pharmacy.findById(vendorId);
+    if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
+
+    // Check if account belongs to vendor
+    const account = await BankAccount.findOne({ _id: accountId, vendor: vendorId });
+    if (!account) return res.status(404).json({ success: false, message: 'Bank account not found' });
+
+    delete updateData._id;
+    delete updateData.vendor;
+    delete updateData.createdAt;
+    delete updateData.addedAt;
+
+    if (updateData.accountNumber && updateData.accountNumber !== account.accountNumber) {
+      const duplicateAccount = await BankAccount.findOne({ vendor: vendorId, accountNumber: updateData.accountNumber, _id: { $ne: accountId } });
+      if (duplicateAccount) return res.status(400).json({ success: false, message: 'Account number already exists' });
+    }
+
+    if (updateData.isDefault === true) {
+      await BankAccount.updateMany({ vendor: vendorId, _id: { $ne: accountId } }, { $set: { isDefault: false } });
+    }
+
+    const updatedAccount = await BankAccount.findByIdAndUpdate(accountId, { $set: updateData }, { new: true, runValidators: true });
+
+    res.status(200).json({ success: true, message: 'Bank account updated successfully', bankAccount: updatedAccount });
+
+  } catch (error) {
+    console.error('Error updating bank account:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// Delete bank account
+export const deleteBankAccount = async (req, res) => {
+   try {
+    const { vendorId, accountId } = req.params;
+
+    // ✅ Find vendor using vendorId
+    const vendor = await Pharmacy.findById(vendorId);
+    if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
+
+    const account = await BankAccount.findOne({ _id: accountId, vendor: vendorId });
+    if (!account) return res.status(404).json({ success: false, message: 'Bank account not found' });
+
+    if (account.isDefault) return res.status(400).json({ success: false, message: 'Cannot delete default account. Set another account as default first.' });
+
+    const pendingWithdrawals = await WithdrawalRequest.countDocuments({ bankAccount: accountId, status: { $in: ['pending', 'processing'] } });
+    if (pendingWithdrawals > 0) return res.status(400).json({ success: false, message: 'Cannot delete account with pending withdrawal requests' });
+
+    await BankAccount.findByIdAndDelete(accountId);
+
+    res.status(200).json({ success: true, message: 'Bank account deleted successfully' });
+
+  } catch (error) {
+    console.error('Error deleting bank account:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// Request withdrawal
+export const requestWithdrawal = async (req, res) => {
+  try {
+    const { vendorId } = req.params; // vendorId from params
+    const { amount, accountId, paymentMethod = 'bank_transfer' } = req.body;
+
+    // Validate vendorId
+    if (!mongoose.Types.ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ success: false, message: "Invalid vendor ID" });
+    }
+
+    // Find vendor (pharmacy)
+    const pharmacy = await Pharmacy.findById(vendorId);
+    if (!pharmacy) {
+      return res.status(404).json({ success: false, message: 'Vendor not found' });
+    }
+
+    // Minimum withdrawal check
+    if (amount < 100) {
+      return res.status(400).json({ success: false, message: 'Minimum withdrawal amount is ₹100' });
+    }
+
+    // Sufficient balance check
+    if (amount > pharmacy.wallet) {
+      return res.status(400).json({ success: false, message: 'Insufficient balance' });
+    }
+
+    // Check active bank account
+    const bankAccount = await BankAccount.findOne({
+      _id: accountId,
+      vendor: vendorId,
+    });
+
+    // Create withdrawal request
+    const withdrawalRequest = new VendorWithdrawal({
+      vendor: vendorId,
+      bankAccount: accountId,
+      amount,
+      paymentMethod,
+      status: 'Requested'
+    });
+
+    await withdrawalRequest.save();
+
+    // Debit pharmacy wallet
+    pharmacy.wallet -= amount;
+    pharmacy.walletTransactions.push({
+      amount,
+      type: 'debit',
+      orderId: withdrawalRequest._id,
+      createdAt: new Date()
+    });
+
+    await pharmacy.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Withdrawal request submitted successfully',
+      withdrawalRequest,
+      newBalance: pharmacy.wallet
+    });
+
+  } catch (error) {
+    console.error('Error processing withdrawal request:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+// Get withdrawal requests
+export const getWithdrawalRequests = async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    const { status, startDate, endDate, limit = 10, page = 1 } = req.query;
+
+    const vendor = await Pharmacy.findById(vendorId);
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: 'Vendor not found'
+      });
+    }
+
+    // Build query
+    const query = { vendor: vendorId };
+
+    if (status) {
+      query.status = status;
+    }
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const withdrawals = await VendorWithdrawal.find(query)
+      .populate('bankAccount', 'bankName accountNumber ifscCode accountHolderName')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await VendorWithdrawal.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      message: 'Withdrawal requests fetched successfully',
+      withdrawals,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching withdrawal requests:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
     });
   }
 };

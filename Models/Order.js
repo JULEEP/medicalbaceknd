@@ -13,16 +13,34 @@ const orderSchema = new mongoose.Schema(
       pincode: { type: String },
       country: { type: String }
     },
-    orderItems: [
-      {
-        medicineId: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'Medicine',
-        },
-        name: { type: String },
-        quantity: { type: Number, min: 1 }
-      }
-    ],
+   orderItems: [
+  {
+    medicineId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Medicine',
+    },
+
+    name: {
+      type: String,
+    },
+
+    price: {
+      type: Number,
+    },
+
+    quantity: {
+      type: Number,
+      min: 1,
+    },
+
+    images: [String],
+
+    description: String,
+  }
+],
+
+pharmacyEarning: { type: Number, default: 0 },
+
     statusTimeline: [
       {
         status: String,
@@ -50,7 +68,7 @@ const orderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['Pending', 'Confirmed', 'Shipped', 'Delivered', 'Cancelled', 'Refunded', 'Assigned', 'Accepted', 'Rejected', 'In Progress', 'Completed', 'PickedUp', 'Failed'],
+      enum: ['Pending', 'Confirmed', "Rider Accepted", 'Shipped', 'Delivered', 'Cancelled', 'Refunded', 'Assigned', 'Accepted', 'Rejected', 'In Progress', 'Completed', 'PickedUp', 'Failed'],
       default: 'Pending'
     },
     assignedRider: {
@@ -138,10 +156,20 @@ codPaymentMode: String, // e.g., 'cash' or 'online'
    couponCode: { type: String, default: null },   // Store the applied coupon code
   discountAmount: { type: Number, default: 0 },   // Store the discount applied
   isPrescriptionOrder: { type: Boolean, default: false },  // New field added to track prescription order
-  assignedPharmacy: {
-  type: mongoose.Schema.Types.ObjectId,
-  ref: 'Pharmacy',
-},
+ pharmacyResponses: [
+    {
+      pharmacyId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Pharmacy"
+      },
+      status: {
+        type: String,
+        enum: ["Pending", "Accepted", "Rejected", "Rider Accepted"],
+        default: "Pending"
+      },
+      respondedAt: Date
+    }
+  ],
 
 pharmacyResponse: {
   type: String,

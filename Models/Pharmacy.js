@@ -26,6 +26,15 @@ categories: [
     image: { type: String, }
   }
 ],
+wallet: { type: Number, default: 0 }, // current balance
+    walletTransactions: [
+      {
+        amount: { type: Number, },
+        type: { type: String, enum: ["credit", "debit"], },
+        orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },
+        createdAt: { type: Date, default: Date.now }
+      }
+    ],
  // Vendor / Owner details
   vendorName: { type: String, },
   vendorEmail: { type: String,  },

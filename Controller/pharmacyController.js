@@ -1110,3 +1110,61 @@ export const getPharmacyById = async (req, res) => {
 
 
 
+// Search Medicines Controller
+export const searchMedicines = async (req, res) => {
+  try {
+    let { search } = req.query;
+
+    if (!search || search.trim().length < 2) {
+      return res.status(200).json({
+        message: "Please enter at least 2 characters to search",
+        total: 0,
+        medicines: []
+      });
+    }
+
+    // 🔹 Normalize input
+    search = search.trim();
+
+    // 🔹 Escape regex special characters
+    const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const medicines = await Medicine.find({
+      name: { $regex: escapedSearch, $options: "i" }
+    })
+      .collation({ locale: "en", strength: 2 }) // ✅ CASE INSENSITIVE GUARANTEE
+      .populate("pharmacyId", "name image");
+
+    if (medicines.length === 0) {
+      return res.status(200).json({
+        message: "No medicines found matching the search criteria",
+        total: 0,
+        medicines: []
+      });
+    }
+
+    const formatted = medicines.map(med => ({
+      medicineId: med._id,
+      name: med.name,
+      images: med.images,
+      price: med.price,
+      mrp: med.mrp,
+      description: med.description,
+      categoryName: med.categoryName,
+      pharmacy: med.pharmacyId || null
+    }));
+
+    return res.status(200).json({
+      message: "Medicines fetched successfully",
+      total: formatted.length,
+      medicines: formatted
+    });
+
+  } catch (error) {
+    console.error("Error searching medicines:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+

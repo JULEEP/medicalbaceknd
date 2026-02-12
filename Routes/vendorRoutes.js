@@ -1,5 +1,5 @@
 import express from 'express';
-import { addBankDetails, addPharmacyByVendorId, createMedicine, createOrderFromPrescription, createVendorQuery, deleteMedicineByVendor, deleteNotificationForVendor, editBankDetails, editMedicineByVendor, getAllMedicinesByVendor, getAllNotificationsForVendor, getAllOrdersByVendor, getAllPeriodicOrdersByVendor, getCategoriesByVendorId, getDeliveredOrdersByVendor, getMessagesForVendor, getPendingOrdersByVendor, getPrescriptionOrdersByVendor, getPrescriptionsForVendor, getVendorDashboard, getVendorProfile, getVendorQueries, updateOrderStatusByVendor, updatePrescriptionStatus, updateVendorProfile, updateVendorStatus, vendorLogin, vendorLogout } from '../Controller/VendorController.js'
+import { addBankAccount, addBankDetails, addPharmacyByVendorId, createMedicine, createOrderFromPrescription, createVendorQuery, deleteBankAccount, deleteMedicineByVendor, deleteNotificationForVendor, deleteOrder, editBankDetails, editMedicineByVendor, getAllMedicinesByVendor, getAllNotificationsForVendor, getAllOrdersByVendor, getAllPeriodicOrdersByVendor, getBankAccounts, getCategoriesByVendorId, getDeliveredOrdersByVendor, getMessagesForVendor, getPendingOrdersByVendor, getPrescriptionOrdersByVendor, getPrescriptionsForVendor, getVendorDashboard, getVendorProfile, getVendorQueries, getVendorWallet, getWithdrawalRequests, requestWithdrawal, updateBankAccount, updateOrderStatusByVendor, updatePrescriptionStatus, updateVendorProfile, updateVendorStatus, vendorLogin, vendorLogout } from '../Controller/VendorController.js'
 import { getAllPreodicOrders } from '../Controller/AdminControler.js';
 
 const router = express.Router();
@@ -33,6 +33,20 @@ router.post('/create-query/:vendorId', createVendorQuery);
 router.get('/myqueries/:vendorId', getVendorQueries);
 router.get('/notifications/:vendorId', getAllNotificationsForVendor);
 router.delete("/deletenotification/:vendorId/:notificationId", deleteNotificationForVendor);
+router.delete('/orders/:orderId', deleteOrder);
+router.get('/getwallet/:vendorId', getVendorWallet);
+
+
+// Bank account routes
+router.post('/add-account/:vendorId', addBankAccount);
+router.get('/accounts/:vendorId', getBankAccounts);
+router.put('/accounts/:vendorId/:accountId', updateBankAccount);
+router.delete('/accounts/:vendorId/:accountId', deleteBankAccount);
+
+// Withdrawal routes
+router.post('/withdraw/:vendorId', requestWithdrawal);
+router.get('/withdrawals/:vendorId', getWithdrawalRequests);
+
 
 
 
