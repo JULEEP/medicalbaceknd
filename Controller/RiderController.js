@@ -9,6 +9,12 @@ import Query from "../Models/Query.js";
 import User from "../Models/User.js";
 import Pharmacy from "../Models/Pharmacy.js";
 import Medicine from "../Models/Medicine.js";
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
 
 
 
@@ -2153,3 +2159,126 @@ export const uploadMedicineProof = async (req, res) => {
 // }
 
 
+
+
+// Setup Nodemailer transport
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'pms226803@gmail.com',
+    pass: 'nrasbifqxsxzurrm',
+  },
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false,
+  requireTLS: true,
+  tls: {
+    rejectUnauthorized: false
+  },
+  connectionTimeout: 60000,
+  greetingTimeout: 30000,
+  socketTimeout: 60000
+});
+
+
+export const deleteRiderAccount = async (req, res) => {
+  const { email, reason } = req.body;
+
+  if (!email || !reason) {
+    return res.status(400).json({ message: "Email and reason are required" });
+  }
+
+  try {
+    const rider = await Rider.findOne({ email });
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    const token = crypto.randomBytes(20).toString("hex");
+    const deleteLink = `${process.env.DELIVERYBOY_BASE_URL}/confirm-delete-account/${token}`;
+
+    rider.deleteToken = token;
+    rider.deleteTokenExpiration = Date.now() + 3600000; // 1 hour
+
+    await rider.save();
+
+    const mailOptions = {
+      from: "pms226803@gmail.com",
+      to: email,
+      subject: "Rider Account Deletion Request",
+      text: `Hi ${rider.name},
+
+We received your rider account deletion request.
+
+Click below to confirm deletion:
+${deleteLink}
+
+Reason: ${reason}
+
+If this was not you, please ignore this email.
+
+Best Regards,
+Your Team`,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    return res.status(200).json({
+      message:
+        "Rider account deletion request processed. Please check email to confirm.",
+      token,
+    });
+  } catch (error) {
+    console.error("Error in deleteRiderAccount:", error);
+    return res.status(500).json({ message: "Something went wrong" });
+  }
+};
+
+
+export const confirmDeleteRider = async (req, res) => {
+  const { token } = req.params;
+
+  try {
+    const rider = await Rider.findOne({
+      deleteToken: token,
+      deleteTokenExpiration: { $gt: Date.now() },
+    });
+
+    if (!rider) {
+      return res.status(400).json({ message: "Invalid or expired token" });
+    }
+
+    await Rider.deleteOne({ _id: rider._id });
+
+    return res.status(200).json({
+      message: "Rider account deleted successfully.",
+    });
+  } catch (error) {
+    console.error("Error in confirmDeleteRider:", error);
+    return res.status(500).json({ message: "Something went wrong" });
+  }
+};
+
+
+
+export const deleteRiderById = async (req, res) => {
+  const { riderId } = req.params;
+
+  try {
+    const rider = await Rider.findById(riderId);
+
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    await Rider.findByIdAndDelete(riderId);
+
+    return res.status(200).json({
+      message: "Rider deleted successfully.",
+    });
+  } catch (error) {
+    console.error("Error deleting rider:", error);
+    return res.status(500).json({ message: "Something went wrong." });
+  }
+};

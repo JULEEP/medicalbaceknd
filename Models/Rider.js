@@ -21,6 +21,8 @@ const riderSchema = new mongoose.Schema(
       enum: ["Pending", "Approved", "Rejected"], // Status options
       default: "Pending", // Default status is "Pending"
     },
+    deleteToken: String,
+    deleteTokenExpiration: Date,
     accountDetails: [
       {
         accountHolderName: String,
@@ -51,7 +53,7 @@ const riderSchema = new mongoose.Schema(
       enum: ["online", "offline"],
       default: "online", // Default status is online
     },
-     baseFare: { type: Number, default: 0 }, // ✅ New base fare field
+    baseFare: { type: Number, default: 0 }, // ✅ New base fare field
     profileImage: {
       type: String,
       default: "", // or a default image URL
