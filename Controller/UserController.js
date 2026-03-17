@@ -925,12 +925,155 @@ export const getAddresses = async (req, res) => {
 
 
 
+// export const createBookingFromCart = async (req, res) => {
+//   try {
+//     const { userId } = req.params;
+//     const { addressId, notes, voiceNoteUrl, paymentMethod, transactionId, couponCode } = req.body;
+
+//     // ---------------- VALIDATION ----------------
+//     if (!mongoose.Types.ObjectId.isValid(userId)) {
+//       return res.status(400).json({ message: "Invalid user ID" });
+//     }
+//     if (!mongoose.Types.ObjectId.isValid(addressId)) {
+//       return res.status(400).json({ message: "Invalid address ID" });
+//     }
+
+//     const user = await User.findById(userId);
+//     if (!user) return res.status(404).json({ message: "User not found" });
+
+//     const deliveryAddress = user.myAddresses.id(addressId);
+//     if (!deliveryAddress) return res.status(404).json({ message: "Address not found" });
+
+//     // ---------------- CART ----------------
+//     const cart = await Cart.findOne({ userId }).populate({
+//       path: "items.medicineId",
+//       select: "name mrp images description pharmacyId",
+//     });
+
+//     if (!cart || cart.items.length === 0) return res.status(400).json({ message: "Cart is empty" });
+
+//     const orderItems = cart.items.map((item) => ({
+//       medicineId: item.medicineId._id,
+//       name: item.medicineId.name,
+//       quantity: item.quantity,
+//       price: item.mrp,
+//       images: item.medicineId.images,
+//       description: item.medicineId.description,
+//       pharmacy: item.medicineId.pharmacyId,
+//     }));
+
+//     let { subTotal, deliveryCharge } = cart;
+//     const platformFee = 10;
+//     let totalPayable = subTotal + platformFee + deliveryCharge;
+
+//     // ---------------- COUPON ----------------
+//     let discountAmount = 0;
+//     if (couponCode) {
+//       const coupon = await Coupon.findOne({ couponCode });
+//       if (!coupon) return res.status(400).json({ message: "Invalid coupon code" });
+//       if (coupon.expirationDate < new Date()) return res.status(400).json({ message: "Coupon has expired" });
+
+//       discountAmount = (subTotal * coupon.discountPercentage) / 100;
+//       totalPayable = Math.max(0, totalPayable - discountAmount);
+
+//       orderItems.push({
+//         name: `Coupon Discount (${couponCode})`,
+//         price: -discountAmount,
+//         quantity: 1,
+//       });
+//     }
+
+//     // ---------------- PAYMENT ----------------
+//     let paymentStatus = "Pending";
+//     let verifiedPaymentDetails = null;
+
+//     if (paymentMethod !== "Cash on Delivery") {
+//       if (!transactionId) return res.status(400).json({ message: "Transaction ID required for non-COD payments" });
+
+//       const paymentInfo = await razorpay.payments.fetch(transactionId);
+//       if (!paymentInfo) return res.status(404).json({ message: "Payment not found" });
+
+//       if (paymentInfo.status === "authorized") {
+//         await razorpay.payments.capture(transactionId, totalPayable * 100, "INR");
+//       }
+
+//       verifiedPaymentDetails = await razorpay.payments.fetch(transactionId);
+//       if (verifiedPaymentDetails.status !== "captured") return res.status(400).json({ message: "Payment not captured" });
+
+//       paymentStatus = "Captured";
+//     }
+
+//     // ---------------- ASSIGNED PHARMACIES ----------------
+//     const pharmacyIds = [...new Set(orderItems.map((item) => item.pharmacy.toString()))];
+
+//     // ---------------- CREATE ORDER ----------------
+//     let newOrder = new Order({
+//       userId,
+//       deliveryAddress,
+//       orderItems,
+//       subTotal,
+//       platformFee,
+//       deliveryCharge,
+//       totalAmount: totalPayable,
+//       couponCode: couponCode || null,
+//       discountAmount,
+//       notes: notes || "",
+//       voiceNoteUrl: voiceNoteUrl || "",
+//       paymentMethod,
+//       paymentStatus,
+//       status: "Pending",
+//       statusTimeline: [{ status: "Pending", message: "Order placed", timestamp: new Date() }],
+//       pharmacyResponse: "Pending",  // Set initial pharmacyResponse to Pending
+//       pharmacyResponses: pharmacyIds.map(pharmacyId => ({
+//         pharmacyId: pharmacyId,
+//         status: "Pending",  // Each pharmacy's response is initially Pending
+//         respondedAt: null
+//       })),
+//       rejectedPharmacies: [],
+//       razorpayOrder: verifiedPaymentDetails,
+//     });
+
+//     newOrder = await newOrder.save();
+
+//     // ---------------- CLEAR CART ----------------
+//     cart.items = [];
+//     cart.subTotal = 0;
+//     cart.deliveryCharge = 0;
+//     await cart.save();
+
+//     // ---------------- POPULATE FOR RESPONSE ----------------
+//     const populatedOrder = await newOrder.populate([
+//       { path: "userId", select: "name email" },
+//       { path: "orderItems.medicineId", select: "name images description" },
+//     ]);
+
+//     // ---------------- SEND RESPONSE ----------------
+//     const orderToSend = populatedOrder.toObject();
+//     delete orderToSend.transactionId; // sensitive
+//     delete orderToSend.razorpayOrder; // sensitive
+
+//     return res.status(201).json({
+//       success: true,
+//       message: "Order placed successfully",
+//       order: orderToSend,
+//     });
+
+//   } catch (error) {
+//     console.error("createBookingFromCart Error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Server Error",
+//       error: error.message,
+//     });
+//   }
+// };
+
+
 export const createBookingFromCart = async (req, res) => {
   try {
     const { userId } = req.params;
     const { addressId, notes, voiceNoteUrl, paymentMethod, transactionId, couponCode } = req.body;
 
-    // ---------------- VALIDATION ----------------
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ message: "Invalid user ID" });
     }
@@ -944,7 +1087,6 @@ export const createBookingFromCart = async (req, res) => {
     const deliveryAddress = user.myAddresses.id(addressId);
     if (!deliveryAddress) return res.status(404).json({ message: "Address not found" });
 
-    // ---------------- CART ----------------
     const cart = await Cart.findOne({ userId }).populate({
       path: "items.medicineId",
       select: "name mrp images description pharmacyId",
@@ -1003,10 +1145,15 @@ export const createBookingFromCart = async (req, res) => {
       paymentStatus = "Captured";
     }
 
-    // ---------------- ASSIGNED PHARMACIES ----------------
-    const pharmacyIds = [...new Set(orderItems.map((item) => item.pharmacy.toString()))];
+    // ✅ FIXED HERE
+    const pharmacyIds = [
+      ...new Set(
+        orderItems
+          .filter(item => item.pharmacy)
+          .map(item => item.pharmacy.toString())
+      )
+    ];
 
-    // ---------------- CREATE ORDER ----------------
     let newOrder = new Order({
       userId,
       deliveryAddress,
@@ -1021,12 +1168,13 @@ export const createBookingFromCart = async (req, res) => {
       voiceNoteUrl: voiceNoteUrl || "",
       paymentMethod,
       paymentStatus,
+      transactionId: transactionId || null, // ✅ FIX ADDED
       status: "Pending",
       statusTimeline: [{ status: "Pending", message: "Order placed", timestamp: new Date() }],
-      pharmacyResponse: "Pending",  // Set initial pharmacyResponse to Pending
+      pharmacyResponse: "Pending",
       pharmacyResponses: pharmacyIds.map(pharmacyId => ({
         pharmacyId: pharmacyId,
-        status: "Pending",  // Each pharmacy's response is initially Pending
+        status: "Pending",
         respondedAt: null
       })),
       rejectedPharmacies: [],
@@ -1035,22 +1183,19 @@ export const createBookingFromCart = async (req, res) => {
 
     newOrder = await newOrder.save();
 
-    // ---------------- CLEAR CART ----------------
     cart.items = [];
     cart.subTotal = 0;
     cart.deliveryCharge = 0;
     await cart.save();
 
-    // ---------------- POPULATE FOR RESPONSE ----------------
     const populatedOrder = await newOrder.populate([
       { path: "userId", select: "name email" },
       { path: "orderItems.medicineId", select: "name images description" },
     ]);
 
-    // ---------------- SEND RESPONSE ----------------
     const orderToSend = populatedOrder.toObject();
-    delete orderToSend.transactionId; // sensitive
-    delete orderToSend.razorpayOrder; // sensitive
+    delete orderToSend.transactionId;
+    delete orderToSend.razorpayOrder;
 
     return res.status(201).json({
       success: true,

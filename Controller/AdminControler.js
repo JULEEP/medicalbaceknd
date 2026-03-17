@@ -1317,6 +1317,39 @@ export const deleteNotification = async (req, res) => {
 };
 
 
+// DELETE multiple notifications
+export const deleteNotifications = async (req, res) => {
+  try {
+    const { notificationIds } = req.body;
+    
+    // Validate input
+    if (!notificationIds || !Array.isArray(notificationIds) || notificationIds.length === 0) {
+      return res.status(400).json({ 
+        message: "Please provide an array of notification IDs" 
+      });
+    }
+
+    // Delete multiple notifications
+    const result = await Notification.deleteMany({ 
+      _id: { $in: notificationIds } 
+    });
+
+    return res.status(200).json({ 
+      success: true,
+      message: `${result.deletedCount} notification(s) deleted successfully`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error("Delete Notifications Error:", error);
+    return res.status(500).json({ 
+      success: false,
+      message: "Server error", 
+      error: error.message 
+    });
+  }
+};
+
+
 
 // UPDATE: Notification by ID
 export const updateNotification = async (req, res) => {
