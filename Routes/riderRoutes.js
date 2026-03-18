@@ -1,6 +1,6 @@
 // router/riderRoutes.js or similar
 import express from "express";
-import {  addBankDetailsToRider, confirmDeleteRider, createRiderQuery, deleteRiderAccount, deleteRiderById, forgotPassword, getAcceptedOrdersForRiderController, getAllActiveOrdersForRiderController, getAllCompletedOrdersForRiderController, getNewOrdersForRiderController, getPickedUpOrdersForRiderController, getRiderBankDetails, getRiderDrivingLicense, getRiderEarningsGraph, getRiderNotifications, getRiderOrdersByStatus, getRiderOrderStats, getRiderProfile, getRiderWalletController, getSingleOrderForRiderController, getUpiInfo, loginRider, markOrderAsDeliveredController, signupRider, updateRiderLocation, updateRiderProfileImage, updateRiderStatus, updateRiderStatusController, uploadDeliveryProof, uploadMedicineProof, withdrawAmountFromWalletController } from "../Controller/RiderController.js";
+import {  addBankDetailsToRider, confirmDeleteRider, createRiderQuery, deleteRiderAccount, deleteRiderById, deleteRiderNotifications, forgotPassword, getAcceptedOrdersForRiderController, getAllActiveOrdersForRiderController, getAllCompletedOrdersForRiderController, getNewOrdersForRiderController, getPickedUpOrdersForRiderController, getRiderBankDetails, getRiderDrivingLicense, getRiderEarningsGraph, getRiderNotifications, getRiderOrdersByStatus, getRiderOrderStats, getRiderProfile, getRiderWalletController, getSingleOrderForRiderController, getUpiInfo, loginRider, markOrderAsDeliveredController, signupRider, updateRiderLocation, updateRiderProfileImage, updateRiderStatus, updateRiderStatusController, uploadDeliveryProof, uploadMedicineProof, withdrawAmountFromWalletController } from "../Controller/RiderController.js";
 
 const router = express.Router();
 
@@ -36,6 +36,7 @@ router.get('/upi-info', getUpiInfo);
 router.post('/deleteaccount', deleteRiderAccount)
 router.get('/confirm-delete-account/:token', confirmDeleteRider);
 router.delete('/delete-rider/:riderId', deleteRiderById);
+router.delete('/deletenotifications/:riderId', deleteRiderNotifications);
 
 
 

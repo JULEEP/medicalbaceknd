@@ -2282,3 +2282,47 @@ export const deleteRiderById = async (req, res) => {
     return res.status(500).json({ message: "Something went wrong." });
   }
 };
+
+
+
+// ✅ Delete Rider Notifications
+export const deleteRiderNotifications = async (req, res) => {
+  try {
+    const { riderId } = req.params;
+    const { notificationIds } = req.body;
+
+    // Validate Rider ID
+    if (!mongoose.Types.ObjectId.isValid(riderId)) {
+      return res.status(400).json({ message: "Invalid Rider ID" });
+    }
+
+    // Validate notificationIds payload
+    if (!Array.isArray(notificationIds) || notificationIds.length === 0) {
+      return res.status(400).json({ message: "notificationIds must be a non-empty array" });
+    }
+
+    // Find the rider
+    const rider = await Rider.findById(riderId).select("notifications");
+    if (!rider) {
+      return res.status(404).json({ message: "Rider not found" });
+    }
+
+    // Filter out notifications to delete
+    rider.notifications = rider.notifications.filter(
+      (notif) => !notificationIds.includes(notif._id.toString())
+    );
+
+    // Save updated rider
+    await rider.save();
+
+    return res.status(200).json({
+      message: "Selected notifications deleted successfully",
+      notifications: rider.notifications.sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      ),
+    });
+  } catch (error) {
+    console.error("Error deleting rider notifications:", error);
+    return res.status(500).json({ message: "Server Error", error: error.message });
+  }
+};
